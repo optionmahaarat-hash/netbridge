@@ -153,6 +153,8 @@ object Auto {
         val tls = profiles.filter { isTls(it) }.sortedBy { p -> val d = p.optInt("delay", -1); if (d >= 0) d else 10_000_000 }
         val plain = profiles.filter { !isTls(it) }
         ConfigGen.forgetDns(); failLogged.set(0)
+        // geoip.dat / geosite.dat must exist BEFORE the first test Xray starts (its config has a geoip:private rule)
+        try { withContext(Dispatchers.IO) { XrayProc.prepare(ctx) } } catch (e: Exception) { log("geo files: " + e) }
         val doh = if (tls.isNotEmpty()) reachableDoh() else emptyList()
         log("ECH DoH reachable: " + (if (doh.isEmpty()) "none (ECH skipped)" else doh.joinToString()))
         val all = ArrayList<Win>(); var relaxed = false; var plainOnly = false
