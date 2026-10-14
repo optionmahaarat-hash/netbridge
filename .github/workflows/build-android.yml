@@ -1,0 +1,53 @@
+# Builds the Android APK on a GitHub machine (no Android Studio needed).
+# Run: GitHub -> Actions -> build-android -> Run workflow.  The APK is in the run's "Artifacts".
+# Optional secret ANDROID_KEYSTORE_B64 = base64 of android/release.jks (keeps the same signature for every update).
+name: build-android
+on: { workflow_dispatch: {} }
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "17" }
+      - name: Xray core + geo files (same version as the Windows app)
+        run: |
+          set -e
+          TAG=v26.7.28
+          curl -fsSL -o x.zip "https://github.com/XTLS/Xray-core/releases/download/$TAG/Xray-android-arm64-v8a.zip"
+          unzip -o x.zip xray geoip.dat geosite.dat -d xr
+          mkdir -p android/app/src/main/jniLibs/arm64-v8a android/app/src/main/assets
+          cp xr/xray android/app/src/main/jniLibs/arm64-v8a/libxray.so
+          cp xr/geoip.dat xr/geosite.dat android/app/src/main/assets/
+          cp assets/seed_profiles.json android/app/src/main/assets/
+      - name: hev-socks5-tunnel (phone traffic -> Xray)
+        run: |
+          set -e
+          mkdir -p hev/jni && cd hev
+          git clone --recursive --depth 1 https://github.com/heiher/hev-socks5-tunnel jni/hev-socks5-tunnel
+          echo 'include $(call all-subdir-makefiles)' > jni/Android.mk
+          printf 'APP_ABI := arm64-v8a\nAPP_PLATFORM := android-26\n' > jni/Application.mk
+          NDK="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:-$(ls -d $ANDROID_HOME/ndk/* | sort -V | tail -1)}}"
+          "$NDK/ndk-build" NDK_LIBS_OUT="$PWD/libs" -j4
+          cp libs/arm64-v8a/libhev-socks5-tunnel.so ../android/app/src/main/jniLibs/arm64-v8a/
+      - name: signing key
+        run: |
+          set -e
+          if [ -n "${{ secrets.ANDROID_KEYSTORE_B64 }}" ]; then
+            echo "${{ secrets.ANDROID_KEYSTORE_B64 }}" | base64 -d > android/release.jks
+          else
+            keytool -genkeypair -keystore android/release.jks -storepass netbridge -keypass netbridge -alias nb \
+              -keyalg RSA -keysize 2048 -validity 36500 -dname "CN=NetBridge"
+          fi
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: "8.9" }
+      - name: accept SDK licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+      - name: build
+        env: { KEYSTORE_PATH: "${{ github.workspace }}/android/release.jks", KEYSTORE_PASS: netbridge, KEY_ALIAS: nb }
+        run: gradle -p android assembleRelease --no-daemon --stacktrace
+      - run: cp android/app/build/outputs/apk/release/*.apk NetBridge.apk
+      - uses: actions/upload-artifact@v4
+        with: { name: NetBridge-apk, path: NetBridge.apk }
+      - uses: actions/upload-artifact@v4
+        with: { name: signing-key-KEEP-SAFE, path: android/release.jks }
