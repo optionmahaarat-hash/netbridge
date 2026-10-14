@@ -16,7 +16,7 @@ import kotlin.coroutines.coroutineContext
 /**
  * The AUTO search of the Windows app: every server x every bypass method is tried in a private Xray with REAL requests
  * (YouTube, Instagram, Google); the first method that works wins and is saved into the server.
- * Not ported (yet): the clean-Cloudflare-IP scan phase.
+ * Phase 2 = clean-Cloudflare-IP scan (ported from app/core/ipscan.py).
  */
 object Auto {
     class Win(val p: P, val v: JSONObject, val ms: Int)
@@ -36,6 +36,71 @@ object Auto {
     }
 
     fun killAll() { live.toList().forEach { it.destroyForcibly() } }
+
+    // ---------------- Phase 2: clean Cloudflare IP scan (port of app/core/ipscan.py) ----------------
+    private val CF_PORTS = setOf(443, 8443, 2053, 2083, 2087, 2096)
+    private val CF_RANGES = listOf(
+        "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22", "141.101.64.0/18", "108.162.192.0/18",
+        "190.93.240.0/20", "188.114.96.0/20", "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+        "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22"
+    )
+
+    private fun looksCloudflare(p: P) = p.s("security").lowercase() == "tls" && p.optInt("port", 0) in CF_PORTS
+
+    private fun ipToLong(a: String) = a.split('.').fold(0L) { acc, x -> acc * 256 + x.toLong() }
+    private fun longToIp(v: Long) = "${(v shr 24) and 255}.${(v shr 16) and 255}.${(v shr 8) and 255}.${v and 255}"
+
+    /** n random IPs spread over Cloudflare's ranges proportionally to their size */
+    private fun sampleIps(n: Int): List<String> {
+        val nets = CF_RANGES.map { r -> val (a, b) = r.split('/'); Pair(ipToLong(a), 1L shl (32 - b.toInt())) }
+        val total = nets.sumOf { it.second }
+        val rnd = java.util.Random()
+        val out = HashSet<String>(); var tries = 0
+        while (out.size < n && tries < n * 20) {
+            tries++
+            var x = (rnd.nextDouble() * total).toLong()
+            for ((base, size) in nets) {
+                if (x < size) { out.add(longToIp(base + 1 + (rnd.nextDouble() * (size - 2)).toLong())); break }
+                x -= size
+            }
+        }
+        return out.toList()
+    }
+
+    private val TRUST_ALL = object : javax.net.ssl.X509TrustManager {
+        override fun checkClientTrusted(c: Array<java.security.cert.X509Certificate>?, a: String?) {}
+        override fun checkServerTrusted(c: Array<java.security.cert.X509Certificate>?, a: String?) {}
+        override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> = arrayOf()
+    }
+
+    /** TCP + TLS (with the profile's SNI) + GET /cdn-cgi/trace. Returns ms, or null if this IP is not reachable. */
+    private fun probeIp(ip: String, port: Int, sni: String, timeout: Int = 3000): Int? {
+        val t0 = System.nanoTime()
+        val raw = Socket()
+        return try {
+            raw.connect(InetSocketAddress(ip, port), timeout); raw.soTimeout = timeout
+            val ctx = javax.net.ssl.SSLContext.getInstance("TLS")
+            ctx.init(null, arrayOf<javax.net.ssl.TrustManager>(TRUST_ALL), null)
+            val host = sni.ifEmpty { ip }
+            val ss = ctx.socketFactory.createSocket(raw, host, port, true) as javax.net.ssl.SSLSocket
+            ss.soTimeout = timeout
+            ss.startHandshake()
+            ss.outputStream.write("GET /cdn-cgi/trace HTTP/1.1\r\nHost: $host\r\nUser-Agent: NetBridge\r\nConnection: close\r\n\r\n".toByteArray())
+            ss.outputStream.flush()
+            val buf = java.io.ByteArrayOutputStream(); val chunk = ByteArray(2048)
+            while (buf.size() < 4096) { val n = ss.inputStream.read(chunk); if (n <= 0) break; buf.write(chunk, 0, n) }
+            val ms = ((System.nanoTime() - t0) / 1_000_000).toInt()
+            val text = buf.toString("UTF-8")
+            if (text.substringBefore("\r\n").contains(" 200") && text.contains("colo=")) ms else null
+        } catch (e: Exception) { null } finally { try { raw.close() } catch (_: Exception) { } }
+    }
+
+    private suspend fun scanIps(ips: List<String>, port: Int, sni: String): List<Pair<Int, String>> = coroutineScope {
+        val sem = Semaphore(60)
+        ips.map { ip ->
+            async(Dispatchers.IO) { sem.withPermit { val ms = probeIp(ip, port, sni) ?: probeIp(ip, port, sni); if (ms != null) ms to ip else null } }
+        }.awaitAll().filterNotNull()
+    }
 
     private fun dnsQuery(name: String): ByteArray {
         val b = java.io.ByteArrayOutputStream()
@@ -164,6 +229,24 @@ object Auto {
                 val st = State(want, true, onProgress, tls.size)
                 runPhase(ctx, tls.map { it to variants(it, doh) }, profiles, st, workers, true)
                 all.addAll(st.wins)
+            }
+            if (all.none { isTls(it.p) } && tls.isNotEmpty() && coroutineContext.isActive) {
+                val cf = tls.filter { looksCloudflare(it) }
+                if (cf.isNotEmpty()) {
+                    log("Phase 2: no TLS server worked - scanning clean Cloudflare IPs...")
+                    val port = cf[0].optInt("port", 443)
+                    val sni = cf[0].s("sni").ifEmpty { cf[0].s("host") }.ifEmpty { cf[0].s("server") }
+                    val found = scanIps(sampleIps(300), port, sni)
+                    val ips = found.sortedBy { it.first }.take(3).map { it.second }
+                    log("Clean IPs found: " + (if (ips.isEmpty()) "none" else ips.joinToString()))
+                    for (ip in ips) {
+                        if (all.count { isTls(it.p) } >= want || !coroutineContext.isActive) break
+                        val st = State(want, true, onProgress, 0)
+                        val items = cf.take(20).map { p -> p to variants(p, doh).map { v -> JSONObject(v.toString()).put("address_override", ip) } }
+                        runPhase(ctx, items, profiles, st, workers, true)
+                        all.addAll(st.wins)
+                    }
+                }
             }
             if (all.none { isTls(it.p) } && plain.isNotEmpty() && coroutineContext.isActive) {
                 log("Phase 3: plain (NOT encrypted) servers")
