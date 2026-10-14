@@ -1,0 +1,3 @@
+# Address of latest.json (one per line, the first that works is used). Lines that do not start with http are ignored.
+# Example:  https://example.com/netbridge/latest.json
+# Edit this BEFORE running build_lite.bat. For copies already given out, put "update_urls": ["https://..."] in data\lite_settings.json

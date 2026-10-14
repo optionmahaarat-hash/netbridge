@@ -1,0 +1,9 @@
+<resources>
+    <color name="nb_bg">#07080B</color>
+    <style name="Theme.NB" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/nb_bg</item>
+        <item name="android:statusBarColor">@color/nb_bg</item>
+        <item name="android:navigationBarColor">@color/nb_bg</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

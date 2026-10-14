@@ -1,0 +1,12 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <!-- suspension bridge: deck, two towers, cable arcs -->
+    <path android:strokeColor="#E7C887" android:strokeWidth="3.2" android:strokeLineCap="round"
+        android:pathData="M26,66 L82,66" />
+    <path android:strokeColor="#E7C887" android:strokeWidth="3.2" android:strokeLineCap="round"
+        android:pathData="M40,66 L40,40 M68,66 L68,40" />
+    <path android:strokeColor="#C9A159" android:strokeWidth="2.4" android:strokeLineCap="round"
+        android:pathData="M26,58 Q33,58 40,40 Q54,70 68,40 Q75,58 82,58" />
+    <path android:strokeColor="#A8803A" android:strokeWidth="1.6" android:strokeLineCap="round"
+        android:pathData="M46,66 L46,56 M54,66 L54,60 M62,66 L62,56" />
+</vector>
