@@ -1,0 +1,21 @@
+# secrets / machine-specific - never upload
+keys/
+data/
+configs/active.json
+*.jks
+
+# big or generated
+cores/
+dist/
+build/
+release/
+updates/
+__pycache__/
+*.pyc
+android/build/
+android/app/build/
+android/.gradle/
+android/local.properties
+android/app/src/main/jniLibs/
+android/app/src/main/assets/geoip.dat
+android/app/src/main/assets/geosite.dat
