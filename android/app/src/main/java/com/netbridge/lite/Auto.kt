@@ -30,6 +30,11 @@ object Auto {
     private val DOH = listOf("https://1.1.1.1/dns-query", "https://8.8.8.8/dns-query", "https://9.9.9.9/dns-query")
     private val live: MutableSet<Process> = ConcurrentHashMap.newKeySet<Process>()
 
+    private val failLogged = java.util.concurrent.atomic.AtomicInteger()
+    private fun why(p: P, msg: String) {
+        if (failLogged.incrementAndGet() <= 10) VpnSvc.log("FAIL " + p.s("name").take(28) + " [" + p.s("bypass") + "]: " + msg)
+    }
+
     fun killAll() { live.toList().forEach { it.destroyForcibly() } }
 
     private fun dnsQuery(name: String): ByteArray {
@@ -82,23 +87,25 @@ object Auto {
         val port = freePort()
         val cfg = File(ctx.cacheDir, "t_$port.json")
         var proc: Process? = null
+        val xlog = java.util.Collections.synchronizedList(ArrayList<String>())
+        fun tail() = synchronized(xlog) { xlog.takeLast(3).joinToString(" | ") }
         try {
             withContext(Dispatchers.IO) {
                 cfg.writeText(ConfigGen.generate(listOf(p), "manual", 0, port, false, all, false, "none").toString())
-                proc = XrayProc.start(ctx, cfg); live.add(proc!!)
+                proc = XrayProc.start(ctx, cfg) { xlog.add(it) }; live.add(proc!!)
             }
             val pr = proc!!
-            if (!withContext(Dispatchers.IO) { waitPort(port, 4000, pr) }) return -1
-            var best: Int? = null; var ok = 0; var tries = 0
+            if (!withContext(Dispatchers.IO) { waitPort(port, 4000, pr) }) { why(p, "Xray did not start: " + tail()); return -1 }
+            var best: Int? = null; var ok = 0; var tries = 0; var lastErr = ""
             while (ok < 2 && tries < 4) {
                 coroutineContext.ensureActive(); tries++
                 try {
                     val ms = withContext(Dispatchers.IO) { Net.fetchVia(port, "http://www.gstatic.com/generate_204", 6000).second }
                     best = if (best == null) ms else minOf(best, ms); ok++
                 } catch (e: CancellationException) { throw e
-                } catch (e: Exception) { if (isTimeout(e)) break }
+                } catch (e: Exception) { lastErr = e.javaClass.simpleName + ": " + (e.message ?: ""); if (isTimeout(e)) break }
             }
-            if (best == null) return -1
+            if (best == null) { why(p, "no reply through server: " + lastErr + " | xray: " + tail()); return -1 }
             if (!strict) return best
             val res = coroutineScope {
                 SITES.map { (_, url, accept) ->
@@ -108,9 +115,11 @@ object Auto {
                     }
                 }.awaitAll()
             }
-            return if (res.all { it >= 0 }) res.sum() / res.size else -1
+            if (res.all { it >= 0 }) return res.sum() / res.size
+            why(p, "sites " + SITES.mapIndexed { i, t -> t.first + "=" + res[i] }.joinToString(" "))
+            return -1
         } catch (e: CancellationException) { throw e
-        } catch (e: Exception) { return -1
+        } catch (e: Exception) { why(p, "exception " + e); return -1
         } finally {
             proc?.let { live.remove(it); XrayProc.stop(it) }
             cfg.delete()
@@ -143,7 +152,7 @@ object Auto {
     suspend fun run(ctx: Context, profiles: List<P>, onProgress: (Int, Int) -> Unit, log: (String) -> Unit, want: Int = 4, workers: Int = 6): Result {
         val tls = profiles.filter { isTls(it) }.sortedBy { p -> val d = p.optInt("delay", -1); if (d >= 0) d else 10_000_000 }
         val plain = profiles.filter { !isTls(it) }
-        ConfigGen.forgetDns()
+        ConfigGen.forgetDns(); failLogged.set(0)
         val doh = if (tls.isNotEmpty()) reachableDoh() else emptyList()
         log("ECH DoH reachable: " + (if (doh.isEmpty()) "none (ECH skipped)" else doh.joinToString()))
         val all = ArrayList<Win>(); var relaxed = false; var plainOnly = false
