@@ -3,7 +3,10 @@
 Based on the PattNG method: only works for TLS configs, because it changes the
 first TLS message (ClientHello) that a filter can read.
 """
+import copy
 import json
+
+from app.core import presets as _presets
 
 CIPHER_SUITES = (
     "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:"
@@ -43,13 +46,55 @@ def ech_value(v):
         return ECH_DEFAULT
     return str(v).strip()
 
-PRESETS = {
+# ---- values that can be updated without a release (see app/core/presets.py) ------------------------------------
+# The built-in values below are the last resort; assets/bypass_presets.json and data/bypass_presets.json win over them.
+BUILTIN = {
+    "standard": {"label": "Fragment + unsafe (works on older Xray too)", "fingerprint": "unsafe",
+                 "cipherSuites": CIPHER_SUITES, "finalmask": FM_STANDARD, "auto": True},
+    "pattng": {"label": "Video/PattNG exact (needs Xray 26.7 or newer)", "fingerprint": "unsafe",
+               "cipherSuites": CIPHER_SUITES, "finalmask": FM_PATTNG, "auto": True},
+}
+_FIXED_LABELS = {
     "off": "Off",
     "ech": "ECH (video method 1: encrypted SNI, fingerprint chrome)",
-    "standard": "Fragment + unsafe (works on older Xray too)",
-    "pattng": "Video/PattNG exact (needs Xray 26.7 or newer)",
     "custom": "Custom (use finalMask / cipherSuites fields)",
 }
+
+# PRESETS (code -> label) is filled by reload(); it is updated IN PLACE so `from app.core.bypass import PRESETS` stays valid.
+PRESETS = {}
+_PRESETS = {}            # code -> preset dict (fingerprint / cipherSuites / finalmask / auto)
+STATE = {"version": 1, "errors": []}
+
+
+def reload(bundled=None, user=None):
+    """(Re)reads the preset files. Never raises: on any problem the built-in values stay in force."""
+    try:
+        res = _presets.load(BUILTIN, bundled, user)
+    except Exception as e:
+        res = {"presets": BUILTIN, "version": 1, "errors": [f"presets: {e}"]}
+    _PRESETS.clear(); _PRESETS.update(res["presets"])
+    PRESETS.clear()
+    PRESETS["off"] = _FIXED_LABELS["off"]
+    PRESETS["ech"] = _FIXED_LABELS["ech"]
+    for name, p in _PRESETS.items():
+        PRESETS[name] = p.get("label") or name
+    PRESETS["custom"] = _FIXED_LABELS["custom"]
+    STATE["version"], STATE["errors"] = res["version"], res["errors"]
+    return STATE
+
+
+def get_preset(name):
+    """The preset dict for a method code ('pattng', 'standard', or one added by a file), else None."""
+    p = _PRESETS.get(name)
+    return copy.deepcopy(p) if p else None
+
+
+def auto_names():
+    """Method codes AUTO should try (after 'off'), in a stable order: pattng, standard, then the extras."""
+    first = [n for n in ("pattng", "standard") if _PRESETS.get(n, {}).get("auto", True)]
+    rest = [n for n, p in _PRESETS.items() if n not in ("pattng", "standard") and p.get("auto", False)]
+    return first + rest
+
 
 def apply_bypass(profile, stream):
     """Mutates the xray streamSettings dict according to profile['bypass']."""
@@ -72,19 +117,20 @@ def apply_bypass(profile, stream):
         tls["fingerprint"] = profile.get("fp") or "chrome"
         tls["echConfigList"] = ech_value(profile.get("ech") or True)
         return stream
-    if mode == "standard":
-        tls["cipherSuites"] = CIPHER_SUITES
-        stream["finalmask"] = json.loads(json.dumps(FM_STANDARD))
-    elif mode == "pattng":
-        tls["cipherSuites"] = CIPHER_SUITES
-        stream["finalmask"] = json.loads(json.dumps(FM_PATTNG))
-    elif mode == "custom":
+    if mode == "custom":
         if profile.get("cs"):
             tls["cipherSuites"] = profile["cs"].strip().replace("\n", "").replace(" ", "")
         if profile.get("fm"):
             stream["finalmask"] = _load(profile["fm"], "finalMask")
     else:
-        raise ValueError(f"Unknown bypass mode: {mode}")
+        preset = get_preset(mode)
+        if preset is None:
+            raise ValueError(f"Unknown bypass mode: {mode}")
+        tls["fingerprint"] = preset.get("fingerprint", "unsafe")
+        if preset.get("cipherSuites"):
+            tls["cipherSuites"] = preset["cipherSuites"]
+        if preset.get("finalmask"):
+            stream["finalmask"] = preset["finalmask"]
     if profile.get("ech"):
         tls["echConfigList"] = ech_value(profile["ech"])
     return stream
@@ -96,3 +142,6 @@ def _load(text, what):
         return json.loads(text)
     except Exception as e:
         raise ValueError(f"{what} is not valid JSON: {e}")
+
+
+reload()

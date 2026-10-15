@@ -8,7 +8,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 /** Port of config_generator.py + bypass.py + routing.py. Needs Xray >= 26.7 (same core as the Windows app). */
 object ConfigGen {
-    private const val CIPHERS =
+    const val CIPHERS =
         "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:" +
         "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:" +
         "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:" +
@@ -18,11 +18,11 @@ object ConfigGen {
     const val ECH_PUBLIC = "cloudflare-ech.com"
     const val ECH_DEFAULT = "cloudflare-ech.com+https://1.1.1.1/dns-query"
 
-    private fun fmPattng() = JSONObject(
+    fun fmPattng() = JSONObject(
         """{"tcp":[{"type":"fragment","settings":{"packets":"tlshello","lengths":["0","104","1"],"delays":["0"],"maxSplit":"0"}},
         {"type":"fragment","settings":{"packets":"1-1","lengths":["114","1"],"delays":["1"],"maxSplit":"11"}}]}"""
     )
-    private fun fmStandard() = JSONObject(
+    fun fmStandard() = JSONObject(
         """{"tcp":[{"type":"fragment","settings":{"packets":"tlshello","length":"10-30","delay":"10-20","maxSplit":"0"}}]}"""
     )
 
@@ -124,14 +124,16 @@ object ConfigGen {
             tls.put("echConfigList", echValue(p.s("ech").ifEmpty { "1" }))
             return stream
         }
-        when (mode) {
-            "standard" -> { tls.put("cipherSuites", CIPHERS); stream.put("finalmask", fmStandard()) }
-            "pattng" -> { tls.put("cipherSuites", CIPHERS); stream.put("finalmask", fmPattng()) }
-            "custom" -> {
-                if (p.s("cs").isNotEmpty()) tls.put("cipherSuites", p.s("cs").trim().replace("\n", "").replace(" ", ""))
-                if (p.s("fm").isNotEmpty()) stream.put("finalmask", loadJson(p.s("fm")))
-            }
-            else -> throw IllegalStateException("Unknown bypass mode: $mode")
+        if (mode == "custom") {
+            if (p.s("cs").isNotEmpty()) tls.put("cipherSuites", p.s("cs").trim().replace("\n", "").replace(" ", ""))
+            if (p.s("fm").isNotEmpty()) stream.put("finalmask", loadJson(p.s("fm")))
+        } else {
+            // standard / pattng / any method added by the updatable preset file (see Presets.kt)
+            val pr = Presets.get(mode) ?: throw IllegalStateException("Unknown bypass mode: $mode")
+            tls.put("fingerprint", pr.optString("fingerprint", "unsafe"))
+            val cs = pr.optString("cipherSuites", "")
+            if (cs.isNotEmpty()) tls.put("cipherSuites", cs)
+            pr.optJSONObject("finalmask")?.let { stream.put("finalmask", it) }
         }
         if (p.s("ech").isNotEmpty()) tls.put("echConfigList", echValue(p.s("ech")))
         return stream
@@ -220,7 +222,8 @@ object ConfigGen {
                 "probeUrl" to "https://www.gstatic.com/generate_204"))
         }
         cfg.put("routing", routing)
-        val sniff = jobj("enabled" to true, "destOverride" to jarr(listOf("http", "tls")), "routeOnly" to false)
+        // test configs behave exactly like the Windows app (routeOnly = true); only the real VPN overrides the destination
+        val sniff = jobj("enabled" to true, "destOverride" to jarr(listOf("http", "tls")), "routeOnly" to !tun)
         val inb = JSONArray()
         if (socksPort > 0) inb.put(jobj("tag" to "socks-in", "listen" to "127.0.0.1", "port" to socksPort, "protocol" to "socks",
             "settings" to jobj("udp" to true), "sniffing" to sniff))

@@ -29,6 +29,7 @@ class Vm(app: Application) : AndroidViewModel(app) {
     val ui = MutableStateFlow(Ui(profiles = profiles.toList(), selected = store.selected, iran = store.iranDirect, lang = store.lang))
 
     init {
+        Presets.load(app)
         viewModelScope.launch {
             VpnSvc.connected.collect { c ->
                 val ph = ui.value.phase

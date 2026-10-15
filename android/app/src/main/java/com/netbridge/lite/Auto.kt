@@ -27,13 +27,20 @@ object Auto {
         Triple("Instagram", "https://www.instagram.com/", { c: Int -> c in 200..399 }),
         Triple("Google", "https://www.google.com/generate_204", { c: Int -> c == 204 })
     )
-    private val DOH = listOf("https://1.1.1.1/dns-query", "https://8.8.8.8/dns-query", "https://9.9.9.9/dns-query")
+    // same list as the Windows app (names + IPs): a network that blocks the bare IPs often still lets the names through
+    private val DOH = listOf(
+        "https://dns.google/dns-query", "https://1.1.1.1/dns-query", "https://cloudflare-dns.com/dns-query",
+        "https://8.8.8.8/dns-query", "https://dns.quad9.net/dns-query", "https://9.9.9.9/dns-query"
+    )
+    // used for ECH when the quick DoH check found nothing (the check can be wrong on a phone): still TRY it
+    private val DOH_FALLBACK = listOf("https://8.8.8.8/dns-query", "https://1.1.1.1/dns-query")
     private val live: MutableSet<Process> = ConcurrentHashMap.newKeySet<Process>()
 
     private val failLogged = java.util.concurrent.atomic.AtomicInteger()
     private fun why(p: P, msg: String) {
-        if (failLogged.incrementAndGet() <= 10) VpnSvc.log("FAIL " + p.s("name").take(28) + " [" + p.s("bypass") + "]: " + msg)
+        if (failLogged.incrementAndGet() <= 40) VpnSvc.log("FAIL " + p.s("name").take(28) + " [" + p.s("bypass") + "]: " + msg)
     }
+    private fun errText(e: Throwable) = e.javaClass.simpleName + ": " + (e.message ?: "").take(120)
 
     fun killAll() { live.toList().forEach { it.destroyForcibly() } }
 
@@ -110,23 +117,67 @@ object Auto {
         return b.toByteArray()
     }
 
-    private fun dohWorks(url: String): Boolean = try {
+    /** null = works, otherwise the reason (written to the report: the old code threw it away) */
+    private fun dohProblem(url: String): String? = try {
         val q = Base64.getUrlEncoder().withoutPadding().encodeToString(dnsQuery(ConfigGen.ECH_PUBLIC))
         val c = URL("$url?dns=$q").openConnection(java.net.Proxy.NO_PROXY) as java.net.HttpURLConnection
         c.connectTimeout = 4000; c.readTimeout = 4000
         c.setRequestProperty("Accept", "application/dns-message")
-        try { c.responseCode == 200 && c.inputStream.use { it.readBytes().size > 12 } } finally { c.disconnect() }
-    } catch (e: Exception) { false }
+        c.setRequestProperty("User-Agent", "NetBridge")
+        try {
+            val code = c.responseCode
+            if (code != 200) "HTTP $code"
+            else if (c.inputStream.use { it.readBytes().size } > 12) null else "empty answer"
+        } finally { c.disconnect() }
+    } catch (e: Exception) { errText(e) }
 
-    private suspend fun reachableDoh(): List<String> = coroutineScope {
-        DOH.map { u -> async(Dispatchers.IO) { u to dohWorks(u) } }.awaitAll().filter { it.second }.map { it.first }
+    private suspend fun reachableDoh(log: (String) -> Unit): List<String> = coroutineScope {
+        val res = DOH.map { u -> async(Dispatchers.IO) { u to dohProblem(u) } }.awaitAll()
+        res.forEach { (u, why) -> if (why != null) log("DoH $u: $why") }
+        res.filter { it.second == null }.map { it.first }
+    }
+
+    /** the method the profile already carries (saved by an earlier AUTO or imported from the Windows app) */
+    private fun savedVariant(p: P): JSONObject? {
+        val b = p.s("bypass")
+        if (b.isEmpty() || b == "off") return null
+        val v = JSONObject().put("bypass", b)
+        if (p.s("ech").isNotEmpty()) v.put("ech", p.s("ech"))
+        return v
     }
 
     private fun variants(p: P, doh: List<String>): List<JSONObject> {
         if (!isTls(p)) return listOf(JSONObject().put("bypass", "off"))
-        val out = arrayListOf(JSONObject().put("bypass", "off"), JSONObject().put("bypass", "pattng"), JSONObject().put("bypass", "standard"))
-        for (u in doh.take(2)) out.add(JSONObject().put("bypass", "ech").put("ech", "${ConfigGen.ECH_PUBLIC}+$u"))
-        return out
+        val out = ArrayList<JSONObject>()
+        savedVariant(p)?.let { out.add(it) }                       // what worked on the PC goes first
+        out.add(JSONObject().put("bypass", "off"))
+        for (n in Presets.autoNames()) out.add(JSONObject().put("bypass", n))     // pattng, standard + any new method of the preset file
+        // ECH is ALWAYS tried: with the DoH servers that answered, or (if none did) with the two common ones
+        for (u in (if (doh.isNotEmpty()) doh else DOH_FALLBACK).take(2))
+            out.add(JSONObject().put("bypass", "ech").put("ech", "${ConfigGen.ECH_PUBLIC}+$u"))
+        val seen = HashSet<String>()
+        return out.filter { seen.add(it.toString()) }
+    }
+
+    /** plain facts about this phone's network, written once into the report */
+    private fun diagnose(tls: List<P>, log: (String) -> Unit) {
+        try {
+            log("diag: device time " + java.util.Date() + " tz=" + java.util.TimeZone.getDefault().id)
+            val seen = HashSet<String>()
+            for (p in tls) {
+                val host = p.s("address_override").ifEmpty { p.s("server") }
+                val port = p.optInt("port", 443)
+                if (host.isEmpty() || !seen.add("$host:$port")) continue
+                if (seen.size > 4) break
+                val t0 = System.nanoTime()
+                val r = try {
+                    val ip = java.net.InetAddress.getAllByName(host).filterIsInstance<java.net.Inet4Address>().firstOrNull()?.hostAddress ?: "no-ipv4"
+                    try { Socket().use { it.connect(InetSocketAddress(ip, port), 3000) }; "$ip tcp-ok " + ((System.nanoTime() - t0) / 1_000_000) + "ms" }
+                    catch (e: Exception) { "$ip tcp-FAIL " + errText(e) }
+                } catch (e: Exception) { "dns-FAIL " + errText(e) }
+                log("diag: $host:$port -> $r")
+            }
+        } catch (e: Exception) { log("diag failed: " + errText(e)) }
     }
 
     private fun with(p: P, v: JSONObject): P {
@@ -153,35 +204,46 @@ object Auto {
         val cfg = File(ctx.cacheDir, "t_$port.json")
         var proc: Process? = null
         val xlog = java.util.Collections.synchronizedList(ArrayList<String>())
-        fun tail() = synchronized(xlog) { xlog.takeLast(3).joinToString(" | ") }
+        // only the useful lines: skip the "deprecated" warnings and the config-reading line that filled the old report
+        fun tail() = synchronized(xlog) {
+            xlog.filter { !it.contains("deprecated") && !it.contains("Reading config") && !it.contains("started") }
+                .takeLast(3).joinToString(" | ").take(400)
+        }
         try {
             withContext(Dispatchers.IO) {
-                cfg.writeText(ConfigGen.generate(listOf(p), "manual", 0, port, false, all, false, "none").toString())
+                // loglevel "warning" (was "none"): the real reason ("failed to dial ...") must reach the report
+                cfg.writeText(ConfigGen.generate(listOf(p), "manual", 0, port, false, all, false, "warning").toString())
                 proc = XrayProc.start(ctx, cfg) { xlog.add(it) }; live.add(proc!!)
             }
             val pr = proc!!
             if (!withContext(Dispatchers.IO) { waitPort(port, 4000, pr) }) { why(p, "Xray did not start: " + tail()); return -1 }
-            var best: Int? = null; var ok = 0; var tries = 0; var lastErr = ""
+            var best: Int? = null; var ok = 0; var tries = 0; var lastErr = ""; var timeouts = 0
             while (ok < 2 && tries < 4) {
                 coroutineContext.ensureActive(); tries++
                 try {
-                    val ms = withContext(Dispatchers.IO) { Net.fetchVia(port, "http://www.gstatic.com/generate_204", 6000).second }
+                    val ms = withContext(Dispatchers.IO) { Net.fetchVia(port, "http://www.gstatic.com/generate_204", 8000).second }
                     best = if (best == null) ms else minOf(best, ms); ok++
                 } catch (e: CancellationException) { throw e
-                } catch (e: Exception) { lastErr = e.javaClass.simpleName + ": " + (e.message ?: ""); if (isTimeout(e)) break }
+                } catch (e: Exception) {
+                    lastErr = errText(e)
+                    if (isTimeout(e) && ++timeouts >= 2) break        // one slow answer is not a dead server: try once more
+                    if (!isTimeout(e)) delay(300)
+                }
             }
             if (best == null) { why(p, "no reply through server: " + lastErr + " | xray: " + tail()); return -1 }
             if (!strict) return best
+            val siteErr = java.util.concurrent.ConcurrentHashMap<String, String>()
             val res = coroutineScope {
-                SITES.map { (_, url, accept) ->
+                SITES.map { (name, url, accept) ->
                     async(Dispatchers.IO) {
-                        try { val (c, ms) = Net.fetchVia(port, url, 10000); if (accept(c)) maxOf(ms, 1) else -1 }
-                        catch (e: Exception) { -1 }
+                        try { val (c, ms) = Net.fetchVia(port, url, 12000); if (accept(c)) maxOf(ms, 1) else { siteErr[name] = "HTTP $c"; -1 } }
+                        catch (e: Exception) { siteErr[name] = errText(e); -1 }
                     }
                 }.awaitAll()
             }
             if (res.all { it >= 0 }) return res.sum() / res.size
-            why(p, "sites " + SITES.mapIndexed { i, t -> t.first + "=" + res[i] }.joinToString(" "))
+            why(p, "sites " + SITES.mapIndexed { i, t -> t.first + "=" + res[i] + (siteErr[t.first]?.let { " ($it)" } ?: "") }.joinToString(" ") +
+                " | xray: " + tail())
             return -1
         } catch (e: CancellationException) { throw e
         } catch (e: Exception) { why(p, "exception " + e); return -1
@@ -215,13 +277,20 @@ object Auto {
     }
 
     suspend fun run(ctx: Context, profiles: List<P>, onProgress: (Int, Int) -> Unit, log: (String) -> Unit, want: Int = 4, workers: Int = 6): Result {
-        val tls = profiles.filter { isTls(it) }.sortedBy { p -> val d = p.optInt("delay", -1); if (d >= 0) d else 10_000_000 }
+        // servers that already carry a working method (from the PC or an earlier run) first, then the fastest known
+        val tls = profiles.filter { isTls(it) }.sortedBy { p ->
+            val d = p.optInt("delay", -1)
+            (if (savedVariant(p) != null) 0L else 20_000_000L) + (if (d >= 0) d else 10_000_000)
+        }
         val plain = profiles.filter { !isTls(it) }
         ConfigGen.forgetDns(); failLogged.set(0)
         // geoip.dat / geosite.dat must exist BEFORE the first test Xray starts (its config has a geoip:private rule)
         try { withContext(Dispatchers.IO) { XrayProc.prepare(ctx) } } catch (e: Exception) { log("geo files: " + e) }
-        val doh = if (tls.isNotEmpty()) reachableDoh() else emptyList()
-        log("ECH DoH reachable: " + (if (doh.isEmpty()) "none (ECH skipped)" else doh.joinToString()))
+        withContext(Dispatchers.IO) { Presets.load(ctx); Presets.autoUpdate(ctx, log) }
+        log("bypass values: version ${Presets.version}" + (if (Presets.errors.isEmpty()) "" else " | skipped: " + Presets.errors.take(3).joinToString("; ")))
+        val doh = if (tls.isNotEmpty()) reachableDoh(log) else emptyList()
+        log("ECH DoH reachable: " + (if (doh.isEmpty()) "none (ECH is still tried with 8.8.8.8 / 1.1.1.1)" else doh.joinToString()))
+        if (tls.isNotEmpty()) withContext(Dispatchers.IO) { diagnose(tls, log) }
         val all = ArrayList<Win>(); var relaxed = false; var plainOnly = false
         try {
             if (tls.isNotEmpty()) {

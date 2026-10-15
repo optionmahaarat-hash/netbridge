@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "updated": "2026-10-15",
+  "presets": {
+    "pattng": {
+      "label": "Video/PattNG exact (needs Xray 26.7 or newer)",
+      "fingerprint": "unsafe",
+      "cipherSuites": "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA:TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256:TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256",
+      "finalmask": {
+        "tcp": [
+          {
+            "type": "fragment",
+            "settings": {
+              "packets": "tlshello",
+              "lengths": [
+                "0",
+                "104",
+                "1"
+              ],
+              "delays": [
+                "0"
+              ],
+              "maxSplit": "0"
+            }
+          },
+          {
+            "type": "fragment",
+            "settings": {
+              "packets": "1-1",
+              "lengths": [
+                "114",
+                "1"
+              ],
+              "delays": [
+                "1"
+              ],
+              "maxSplit": "11"
+            }
+          }
+        ]
+      },
+      "auto": true
+    },
+    "standard": {
+      "label": "Fragment + unsafe (works on older Xray too)",
+      "fingerprint": "unsafe",
+      "cipherSuites": "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA:TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256:TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256",
+      "finalmask": {
+        "tcp": [
+          {
+            "type": "fragment",
+            "settings": {
+              "packets": "tlshello",
+              "length": "10-30",
+              "delay": "10-20",
+              "maxSplit": "0"
+            }
+          }
+        ]
+      },
+      "auto": true
+    }
+  }
+}

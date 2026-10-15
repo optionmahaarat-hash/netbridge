@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QFil
 from app.core import ports, system_proxy
 from app.core.config_generator import write_config
 from app.core.xray_manager import XrayManager
-from app.core import autobypass, tlsup
+from app.core import autobypass, bypass, presets, tlsup
 from app.lite import engine as E, paths, updater
 from app.lite.i18n import lang, set_lang, tr
 from app.lite.version import LITE_VERSION
@@ -323,6 +323,10 @@ class LiteWindow(QMainWindow):
         def prog(v):
             if self.state == FINDING: self.set_state(FINDING, done=v[0], total=v[1])
         def work(p, c):
+            res = presets.auto_update(bypass.STATE["version"])        # newest bypass values first; silent, failure changes nothing
+            if res and res[0] == "updated":
+                bypass.reload()
+                self.log.append(f"AUTO: bypass values updated to version {res[1]['version']}")
             r = E.auto_find(self.xray.executable, self.profiles, on_progress=lambda d, n: p((d, n)), cancelled=c,
                             on_status=lambda t: self.log.append("AUTO: " + t))
             return r

@@ -20,7 +20,7 @@ import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
-from app.core import ipscan
+from app.core import bypass, ipscan
 from app.core.delay_all import test_one
 from app.utils import latency
 
@@ -72,7 +72,8 @@ def variants(profile, doh_urls=(), clean_ip=None):
     """Ordered list of override dicts to try for one profile."""
     if not is_tls(profile):
         return [{"bypass": "off"}]
-    out = [{"bypass": "off"}, {"bypass": "pattng"}, {"bypass": "standard"}]
+    # "off", then every preset the (updatable) presets file marks for AUTO: pattng, standard and any new ones
+    out = [{"bypass": "off"}] + [{"bypass": n} for n in bypass.auto_names()]
     for u in list(doh_urls)[:2]:
         out.append({"bypass": "ech", "ech": f"{ECH_PUBLIC_NAME}+{u}"})
     if clean_ip:

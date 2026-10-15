@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
 import json
 import html
 from app.core.bypass import PRESETS, CIPHER_SUITES, FM_STANDARD, FM_PATTNG
+from app.core import bypass as bypass_mod, presets as presets_mod
 from app.storage.profiles import load_profiles, save_profiles
 from app.utils.parser import parse_many
 from app.utils.validator import validate_profile
@@ -93,10 +94,16 @@ class BypassDialog(QDialog):
         lay.addWidget(QLabel("cipherSuites (colon-separated, no spaces) - used in Custom mode:"))
         self.cs = QTextEdit(); self.cs.setPlainText(profile.get("cs", "")); lay.addWidget(self.cs)
         row = QHBoxLayout()
-        for txt, fm in [("Fill standard fragment", FM_STANDARD), ("Fill PattNG fragment", FM_PATTNG)]:
-            b = QPushButton(txt); b.clicked.connect(lambda _=False, f=fm: self.fm.setPlainText(json.dumps(f)))
+        # the values come from the preset files (updatable); the compiled-in ones are only the fallback
+        def preset_value(name, key, fallback):
+            p = bypass_mod.get_preset(name) or {}
+            return p.get(key) or fallback
+        for txt, name, fb in [("Fill standard fragment", "standard", FM_STANDARD), ("Fill PattNG fragment", "pattng", FM_PATTNG)]:
+            b = QPushButton(txt)
+            b.clicked.connect(lambda _=False, n=name, f=fb: self.fm.setPlainText(json.dumps(preset_value(n, "finalmask", f))))
             row.addWidget(b)
-        b = QPushButton("Fill cipherSuites"); b.clicked.connect(lambda: self.cs.setPlainText(CIPHER_SUITES)); row.addWidget(b)
+        b = QPushButton("Fill cipherSuites")
+        b.clicked.connect(lambda: self.cs.setPlainText(preset_value("pattng", "cipherSuites", CIPHER_SUITES))); row.addWidget(b)
         lay.addLayout(row)
         lay.addWidget(QLabel("Needs a TLS config. Result depends on operator/city; no guarantee."))
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -127,6 +134,19 @@ class IpWorker(QThread):
             self.done.emit(full_report(self.proxy))
         except Exception as e:
             self.done.emit(f"Exit check failed: {e}")
+
+
+class PresetWorker(QThread):
+    """Downloads the bypass values file (see app/core/presets.py). Only the network part runs here;
+    the result is applied in the window (UI thread), so the menus never see a half-changed list."""
+    done = Signal(object)                      # ("updated"|"current", doc, errors)  or  an error text
+    def __init__(self, current_version, proxy, parent=None):
+        super().__init__(parent); self.current, self.proxy = current_version, proxy
+    def run(self):
+        try:
+            self.done.emit(presets_mod.update(self.current, proxy=self.proxy))
+        except Exception as e:
+            self.done.emit(f"{e}")
 
 
 class PinWorker(QThread):
@@ -313,6 +333,8 @@ class MainWindow(QMainWindow):
         r4 = QHBoxLayout()
         self.pin_btn = QPushButton("Pin certs (self-signed servers)"); self.pin_btn.clicked.connect(lambda: self.pin_certs())
         r4.addWidget(self.pin_btn)
+        self.preset_btn = QPushButton("Update bypass values (finalMask / ciphers)")
+        self.preset_btn.clicked.connect(self.update_presets); r4.addWidget(self.preset_btn)
         r5 = QHBoxLayout()
         b = QPushButton("Select all"); b.clicked.connect(lambda: self.list.selectAll()); r5.addWidget(b)
         b = QPushButton("Select failed (x)"); b.clicked.connect(self.select_failed); r5.addWidget(b)
@@ -755,6 +777,28 @@ class MainWindow(QMainWindow):
         save_profiles(self.profiles); self.pin_btn.setEnabled(True)
         self.log.append(f"Pinned {self._pin_ok}, failed {self._pin_bad}."
                         + (" Failed servers are offline or need a different obfs/port; press the button to retry." if self._pin_bad else ""))
+
+    def update_presets(self):
+        """Fetch newer bypass values (through the tunnel if connected, else directly) and apply them."""
+        self.preset_btn.setEnabled(False)
+        proxy = self.proxy_url() if self.xray.running else None
+        self.log.append(f"Updating bypass values (now version {bypass_mod.STATE['version']}) ...")
+        self.prw = PresetWorker(bypass_mod.STATE["version"], proxy, self)
+        self.prw.done.connect(self._presets_done); self.prw.start()
+
+    def _presets_done(self, res):
+        self.preset_btn.setEnabled(True)
+        if isinstance(res, str):
+            self.log.append("Bypass values: update failed - " + res); return
+        status, doc, errs = res
+        if status == "updated":
+            bypass_mod.reload()
+            self.log.append(f"Bypass values updated to version {doc['version']} "
+                            f"({', '.join(doc['presets'])}). Run AUTO again, or pick the method in Bypass.")
+        else:
+            self.log.append(f"Bypass values are already the newest (version {bypass_mod.STATE['version']}).")
+        for e in errs + bypass_mod.STATE["errors"]:
+            self.log.append("  skipped: " + e)
 
     def check_ip(self):
         if not self.xray.running:
