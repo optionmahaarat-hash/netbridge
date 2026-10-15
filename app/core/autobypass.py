@@ -68,8 +68,35 @@ def reachable_doh(candidates=None, timeout=4.0, workers=6):
     return [u for u, good in zip(cands, ok) if good]
 
 
-def variants(profile, doh_urls=(), clean_ip=None):
-    """Ordered list of override dicts to try for one profile."""
+_V6 = {}
+
+
+def is_name(host):
+    """True for a server given by name (not an IPv4 / IPv6 literal)."""
+    host = str(host or "")
+    return bool(host) and ":" not in host and not host.replace(".", "").isdigit()
+
+
+def resolve6(host, port=443):
+    """First IPv6 address of a server name (cached, None if it has none). A server that is already an IP is not resolved."""
+    host = str(host or "")
+    if not is_name(host):
+        return None
+    if host not in _V6:
+        ip = None
+        try:
+            for *_x, sa in socket.getaddrinfo(host, int(port or 443), socket.AF_INET6, socket.SOCK_STREAM):
+                ip = sa[0]
+                break
+        except Exception:
+            ip = None
+        _V6[host] = ip
+    return _V6[host]
+
+
+def variants(profile, doh_urls=(), clean_ip=None, ipv6=False):
+    """Ordered list of override dicts to try for one profile.
+    ipv6=True adds, at the END, IPv6 entry points for servers given by name ({"ip6": True} = connect to the server's AAAA address)."""
     if not is_tls(profile):
         return [{"bypass": "off"}]
     # "off", then every preset the (updatable) presets file marks for AUTO: pattng, standard and any new ones
@@ -78,12 +105,21 @@ def variants(profile, doh_urls=(), clean_ip=None):
         out.append({"bypass": "ech", "ech": f"{ECH_PUBLIC_NAME}+{u}"})
     if clean_ip:
         out = [dict(v, address_override=clean_ip) for v in out]
+    elif ipv6 and not profile.get("address_override") and is_name(profile.get("server")):
+        # the name is resolved later, inside the worker thread (find_variant skips the variant when there is no AAAA record)
+        first = (bypass.auto_names() or ["off"])[0]
+        out += [{"bypass": "off", "ip6": True}] + ([{"bypass": first, "ip6": True}] if first != "off" else [])
     return out
 
 
 def _with(profile, v):
     p = dict(profile)
     p.pop("ech", None)
+    v = dict(v)
+    if v.pop("ip6", False):
+        ip = resolve6(profile.get("server"), profile.get("port"))
+        if ip:
+            v["address_override"] = ip
     p.update(v)
     return p
 
@@ -97,6 +133,10 @@ def apply_variant(profile, v):
         profile.pop("ech", None)
     if v.get("address_override"):
         profile["address_override"] = v["address_override"]
+    elif v.get("ip6"):
+        ip = resolve6(profile.get("server"), profile.get("port"))
+        if ip:
+            profile["address_override"] = ip
 
 
 def label(v):
@@ -105,6 +145,8 @@ def label(v):
         s += " via " + v["ech"].split("+", 1)[-1]
     if v.get("address_override"):
         s += f" @ {v['address_override']}"
+    if v.get("ip6"):
+        s += " (IPv6)"
     return s
 
 
@@ -126,6 +168,8 @@ def find_variant(executable, profile, port, vs, cancelled=lambda: False, timeout
     for v in vs:
         if cancelled():
             return None
+        if v.get("ip6") and not resolve6(profile.get("server"), profile.get("port")):
+            continue                                   # no AAAA record: nothing to test
         ms = tester(executable, _with(profile, v), port, timeout=timeout)
         if ms is not None and ms >= 0:
             return v, ms
@@ -173,10 +217,15 @@ def auto_run(executable, profiles, on_win, on_status=lambda s: None, on_progress
     doh = doh_check() if tls else []
     on_status("ECH DoH reachable: " + (", ".join(doh) if doh else "none - ECH will be skipped"))
 
+    has6 = getattr(scanner, "has_ipv6", None)
+    v6 = bool(has6()) if (tls and callable(has6)) else False
+    if tls:
+        on_status("IPv6: " + ("route available - IPv6 entry points are tried last" if v6 else "no IPv6 route here - skipped"))
+
     state = {"tls_wins": 0, "wins": 0, "done": 0, "total": len(tls), "progress": on_progress}
     if tls:
         on_status(f"Phase 1: {len(tls)} TLS profile(s) x methods (stops after {want} working)")
-        _run_phase(executable, [(p, variants(p, doh)) for p in tls], on_win, cancelled, want, state, workers, tester)
+        _run_phase(executable, [(p, variants(p, doh, ipv6=v6)) for p in tls], on_win, cancelled, want, state, workers, tester)
 
     if state["tls_wins"] == 0 and tls and not cancelled():
         cf = [p for p in tls if scanner.looks_cloudflare(p)]
@@ -184,7 +233,10 @@ def auto_run(executable, profiles, on_win, on_status=lambda s: None, on_progress
             on_status("Phase 2: no TLS profile worked - scanning clean Cloudflare IPs...")
             port, sni = scanner.scan_target(cf[0])
             found = []
-            scanner.scan(scanner.sample_ips(scanner.load_ranges(), 300), port, sni,
+            ranges = scanner.load_ranges()
+            if v6 and callable(getattr(scanner, "load_ranges6", None)):
+                ranges = ranges + scanner.load_ranges6()
+            scanner.scan(scanner.sample_ips(ranges, 300), port, sni,
                          lambda ip, ms, colo: found.append((ms, ip)), cancelled=cancelled)
             ips = [ip for _, ip in sorted(found)[:3]]
             on_status(f"Clean IPs found: {', '.join(ips) if ips else 'none'}")
@@ -209,7 +261,7 @@ def auto_run(executable, profiles, on_win, on_status=lambda s: None, on_progress
         # but say so: these profiles may connect without opening those sites.
         on_status("No profile passed the YouTube/Instagram check - falling back to the basic test (weaker)")
         state.update(done=0, total=len(tls))
-        _run_phase(executable, [(p, variants(p, doh)) for p in tls], on_win, cancelled, 2, state, workers, relaxed_tester)
+        _run_phase(executable, [(p, variants(p, doh, ipv6=v6)) for p in tls], on_win, cancelled, 2, state, workers, relaxed_tester)
         relaxed = state["wins"] > 0
     return {"tls": state["tls_wins"], "plain": state["wins"] - state["tls_wins"],
             "insecure_fallback": insecure, "relaxed_fallback": relaxed}

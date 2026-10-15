@@ -54,11 +54,14 @@ object Auto {
 
     private fun looksCloudflare(p: P) = p.s("security").lowercase() == "tls" && p.optInt("port", 0) in CF_PORTS
 
+    // Cloudflare's published IPv6 ranges (same list as app/core/ipscan.py)
+    private val CF_RANGES6 = listOf("2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32", "2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32")
+
     private fun ipToLong(a: String) = a.split('.').fold(0L) { acc, x -> acc * 256 + x.toLong() }
     private fun longToIp(v: Long) = "${(v shr 24) and 255}.${(v shr 16) and 255}.${(v shr 8) and 255}.${v and 255}"
 
-    /** n random IPs spread over Cloudflare's ranges proportionally to their size */
-    private fun sampleIps(n: Int): List<String> {
+    /** n random IPv4s spread over Cloudflare's ranges proportionally to their size */
+    private fun sampleIps4(n: Int): List<String> {
         val nets = CF_RANGES.map { r -> val (a, b) = r.split('/'); Pair(ipToLong(a), 1L shl (32 - b.toInt())) }
         val total = nets.sumOf { it.second }
         val rnd = java.util.Random()
@@ -72,6 +75,61 @@ object Auto {
             }
         }
         return out.toList()
+    }
+
+    private fun big16(v: java.math.BigInteger): ByteArray {
+        val b = v.toByteArray(); val out = ByteArray(16); val len = minOf(b.size, 16)
+        System.arraycopy(b, b.size - len, out, 16 - len, len)
+        return out
+    }
+
+    /** n random IPv6s spread over Cloudflare's IPv6 ranges proportionally to their size */
+    private fun sampleIps6(n: Int): List<String> {
+        val nets = CF_RANGES6.map { r ->
+            val (a, b) = r.split('/')
+            Pair(java.math.BigInteger(1, java.net.InetAddress.getByName(a).address), java.math.BigInteger.ONE.shiftLeft(128 - b.toInt()))
+        }
+        val total = nets.fold(java.math.BigInteger.ZERO) { acc, x -> acc + x.second }
+        val rnd = java.util.Random()
+        val out = HashSet<String>(); var tries = 0
+        while (out.size < n && tries < n * 20) {
+            tries++
+            var x = java.math.BigInteger(total.bitLength() + 8, rnd).mod(total)
+            for ((base, size) in nets) {
+                if (x < size) {
+                    val host = java.math.BigInteger(size.bitLength() + 8, rnd).mod(size - java.math.BigInteger.TWO) + java.math.BigInteger.ONE
+                    out.add(java.net.InetAddress.getByAddress(big16(base + host)).hostAddress ?: break)
+                    break
+                }
+                x -= size
+            }
+        }
+        return out.toList()
+    }
+
+    /** IPv4 only, or (when the phone has an IPv6 route) half IPv4 / half IPv6: an IPv6 range is billions of times bigger, so by size alone it would crowd IPv4 out */
+    private fun sampleIps(n: Int, v6: Boolean): List<String> =
+        if (v6) sampleIps4(n - n / 2) + sampleIps6(n / 2) else sampleIps4(n)
+
+    /** true if this phone has an IPv6 route to the internet (nothing is sent: a UDP connect() only asks the routing table) */
+    private fun hasIpv6(): Boolean = try {
+        java.net.DatagramSocket().use { s ->
+            s.connect(InetSocketAddress(java.net.InetAddress.getByName("2606:4700:4700::1111"), 53)); true
+        }
+    } catch (e: Exception) { false }
+
+    @Volatile private var ipv6Route = false
+    private val v6Cache = ConcurrentHashMap<String, String>()
+
+    /** first IPv6 address of a server NAME (cached; null if it has none or is already an IP) */
+    private fun resolve6(host: String): String? {
+        if (host.isEmpty() || isIp(host)) return null
+        v6Cache[host]?.let { return it.ifEmpty { null } }
+        val ip = try {
+            java.net.InetAddress.getAllByName(host).filterIsInstance<java.net.Inet6Address>().firstOrNull()?.hostAddress?.substringBefore('%')
+        } catch (e: Exception) { null }
+        v6Cache[host] = ip ?: ""
+        return ip
     }
 
     private val TRUST_ALL = object : javax.net.ssl.X509TrustManager {
@@ -155,6 +213,11 @@ object Auto {
         // ECH is ALWAYS tried: with the DoH servers that answered, or (if none did) with the two common ones
         for (u in (if (doh.isNotEmpty()) doh else DOH_FALLBACK).take(2))
             out.add(JSONObject().put("bypass", "ech").put("ech", "${ConfigGen.ECH_PUBLIC}+$u"))
+        // IPv6 entry points go LAST (the name is resolved later, in the worker; no AAAA record = variant skipped)
+        if (ipv6Route && p.s("address_override").isEmpty() && !isIp(p.s("server"))) {
+            out.add(JSONObject().put("bypass", "off").put("ip6", true))
+            Presets.autoNames().firstOrNull()?.let { out.add(JSONObject().put("bypass", it).put("ip6", true)) }
+        }
         val seen = HashSet<String>()
         return out.filter { seen.add(it.toString()) }
     }
@@ -182,7 +245,11 @@ object Auto {
 
     private fun with(p: P, v: JSONObject): P {
         val q = p.copyP(); q.remove("ech")
-        for (k in v.keys()) q.put(k, v.get(k))
+        for (k in v.keys()) { if (k != "ip6") q.put(k, v.get(k)) }
+        if (v.optBoolean("ip6")) resolve6(p.s("server"))?.let { ip ->
+            q.put("address_override", ip)
+            if (q.s("host").isEmpty() && q.s("network") in setOf("ws", "httpupgrade", "xhttp", "splithttp")) q.put("host", p.s("server"))
+        }
         return q
     }
 
@@ -267,6 +334,7 @@ object Auto {
                 sem.withPermit {
                     for (v in vs) {
                         if (!isActive || st.count() >= st.want) break
+                        if (v.optBoolean("ip6") && withContext(Dispatchers.IO) { resolve6(p.s("server")) } == null) continue
                         val ms = testOne(ctx, with(p, v), all, strict)
                         if (ms >= 0) { st.wins.add(Win(p, v, ms)); break }
                     }
@@ -290,6 +358,9 @@ object Auto {
         log("bypass values: version ${Presets.version}" + (if (Presets.errors.isEmpty()) "" else " | skipped: " + Presets.errors.take(3).joinToString("; ")))
         val doh = if (tls.isNotEmpty()) reachableDoh(log) else emptyList()
         log("ECH DoH reachable: " + (if (doh.isEmpty()) "none (ECH is still tried with 8.8.8.8 / 1.1.1.1)" else doh.joinToString()))
+        v6Cache.clear()
+        ipv6Route = tls.isNotEmpty() && withContext(Dispatchers.IO) { hasIpv6() }
+        log("IPv6: " + (if (ipv6Route) "route available - IPv6 entry points are tried last" else "no IPv6 route here - skipped"))
         if (tls.isNotEmpty()) withContext(Dispatchers.IO) { diagnose(tls, log) }
         val all = ArrayList<Win>(); var relaxed = false; var plainOnly = false
         try {
@@ -305,13 +376,13 @@ object Auto {
                     log("Phase 2: no TLS server worked - scanning clean Cloudflare IPs...")
                     val port = cf[0].optInt("port", 443)
                     val sni = cf[0].s("sni").ifEmpty { cf[0].s("host") }.ifEmpty { cf[0].s("server") }
-                    val found = scanIps(sampleIps(300), port, sni)
+                    val found = scanIps(sampleIps(300, ipv6Route), port, sni)
                     val ips = found.sortedBy { it.first }.take(3).map { it.second }
                     log("Clean IPs found: " + (if (ips.isEmpty()) "none" else ips.joinToString()))
                     for (ip in ips) {
                         if (all.count { isTls(it.p) } >= want || !coroutineContext.isActive) break
                         val st = State(want, true, onProgress, 0)
-                        val items = cf.take(20).map { p -> p to variants(p, doh).map { v -> JSONObject(v.toString()).put("address_override", ip) } }
+                        val items = cf.take(20).map { p -> p to variants(p, doh).filter { !it.optBoolean("ip6") }.map { v -> JSONObject(v.toString()).put("address_override", ip) } }
                         runPhase(ctx, items, profiles, st, workers, true)
                         all.addAll(st.wins)
                     }
@@ -335,6 +406,8 @@ object Auto {
         for (w in all) {
             w.p.put("bypass", w.v.optString("bypass", "off"))
             if (w.v.has("ech")) w.p.put("ech", w.v.getString("ech")) else w.p.remove("ech")
+            if (w.v.has("address_override")) w.p.put("address_override", w.v.getString("address_override"))
+            else if (w.v.optBoolean("ip6")) resolve6(w.p.s("server"))?.let { w.p.put("address_override", it) }
             w.p.put("delay", w.ms); w.p.put("delay_ts", now)
         }
         val pool = all.filter { isTls(it.p) }.ifEmpty { all }

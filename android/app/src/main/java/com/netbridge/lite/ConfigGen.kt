@@ -163,7 +163,7 @@ object ConfigGen {
         }
         val ss = o.optJSONObject("streamSettings") ?: JSONObject().also { o.put("streamSettings", it) }
         val so = ss.optJSONObject("sockopt") ?: JSONObject().also { ss.put("sockopt", it) }
-        so.put("domainStrategy", "UseIPv4")
+        if (!addr(p).contains(':')) so.put("domainStrategy", "UseIPv4")     // a name is resolved to IPv4; an IPv6 literal is used as it is
         return o
     }
 
