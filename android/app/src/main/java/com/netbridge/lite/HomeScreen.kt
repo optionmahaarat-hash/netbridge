@@ -150,7 +150,7 @@ fun HomeScreen(vm: Vm, ui: Ui, onOrb: () -> Unit) {
 
     val toast = { text: String -> Toast.makeText(ctx, text, Toast.LENGTH_SHORT).show() }
     val addedTxt = t("added"); val noneTxt = t("nothing_new"); val badTxt = t("no_valid"); val subTxt = t("sub_fail")
-    val clipAddedTxt = t("clip_auto")
+    val clipAddedTxt = t("clip_auto"); val emptyClipTxt = t("clip_empty")
     // a copied config is added by itself when the app comes to the front (Android only lets the focused window read the clipboard)
     LaunchedEffect(focused) {
         if (!focused) return@LaunchedEffect
@@ -207,7 +207,10 @@ fun HomeScreen(vm: Vm, ui: Ui, onOrb: () -> Unit) {
             // add button (gold outline)
             Box(Modifier.fillMaxWidth().height(52.dp).clip(RoundedCornerShape(18.dp))
                 .border(1.dp, GoldBrush, RoundedCornerShape(18.dp))
-                .clickable(enabled = ui.phase == Phase.IDLE) { clipNow = clipboard.getText()?.text ?: clipNow; sheet = "add" }, contentAlignment = Alignment.Center) {
+                .clickable(enabled = ui.phase == Phase.IDLE) {
+                    val tx = (clipboard.getText()?.text ?: clipNow).trim()          // read now, while this window has focus
+                    if (tx.isEmpty()) toast(emptyClipTxt) else vm.addText(tx, done)
+                }, contentAlignment = Alignment.Center) {
                 Text(t("add"), color = NB.GoldLight, fontSize = 15.sp, fontWeight = FontWeight.Medium, letterSpacing = .5.sp)
             }
             if (ui.profiles.isEmpty()) {
@@ -228,7 +231,6 @@ fun HomeScreen(vm: Vm, ui: Ui, onOrb: () -> Unit) {
         ) {
             when (sheet) {
                 "servers" -> ServersSheet(vm, ui) { sheet = "" }
-                "add" -> AddSheet(vm, clipNow, done)
                 "settings" -> SettingsSheet(vm, ui, toast)
             }
         }
@@ -274,30 +276,6 @@ private fun ServerRow(name: String, sub: String, ping: Int?, selected: Boolean, 
             Text(txt, color = col, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 8.dp))
         }
         if (deletable) Text("✕", color = NB.Muted, fontSize = 16.sp, modifier = Modifier.clip(CircleShape).clickable(onClick = onDelete).padding(8.dp))
-    }
-}
-
-@Composable
-private fun AddSheet(vm: Vm, clip: String, done: (String, Int) -> Unit) {
-    var text by remember { mutableStateOf(if ("://" in clip) clip else "") }
-    Column(Modifier.fillMaxWidth().navigationBarsPadding().imePadding().padding(horizontal = 24.dp).padding(bottom = 24.dp)) {
-        SheetTitle(t("add_title"))
-        OutlinedTextField(
-            value = text, onValueChange = { text = it }, modifier = Modifier.fillMaxWidth().heightIn(min = 130.dp),
-            placeholder = { Text(t("add_hint"), color = NB.Muted, fontSize = 13.sp) }, shape = RoundedCornerShape(16.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = NB.Gold, unfocusedBorderColor = NB.Stroke, focusedTextColor = NB.Text, unfocusedTextColor = NB.Text,
-                cursorColor = NB.Gold, focusedContainerColor = NB.Bg1, unfocusedContainerColor = NB.Bg1)
-        )
-        Spacer(Modifier.height(14.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Box(Modifier.weight(1f).height(50.dp).clip(RoundedCornerShape(16.dp)).border(1.dp, NB.Stroke, RoundedCornerShape(16.dp))
-                .clickable { text = clip }, contentAlignment = Alignment.Center) { Text(t("paste"), color = NB.Text, fontSize = 13.sp) }
-            Box(Modifier.weight(1f).height(50.dp).clip(RoundedCornerShape(16.dp)).background(GoldBrush)
-                .clickable(enabled = text.isNotBlank()) { vm.addText(text, done) }, contentAlignment = Alignment.Center) {
-                Text(t("add_btn"), color = NB.Bg0, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-            }
-        }
     }
 }
 
