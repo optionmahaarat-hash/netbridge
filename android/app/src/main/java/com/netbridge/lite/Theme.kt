@@ -57,6 +57,7 @@ private val S: Map<String, Pair<String, String>> = mapOf(
     "warn_plain" to ("هشدار: فقط سرورهای بدون رمزنگاری جواب دادند" to "Warning: only unencrypted servers answered"),
     "start_fail" to ("اتصال برقرار نشد" to "Could not connect"),
     "clip_found" to ("کانفیگ در کلیپ‌بورد پیدا شد" to "config(s) found in the clipboard"),
+    "clip_auto" to ("سرور از کلیپ‌بورد اضافه شد" to "server(s) added from the clipboard"),
     "clip_add" to ("افزودن" to "Add"),
     "settings" to ("تنظیمات" to "Settings"),
     "iran" to ("سایت‌های ایرانی مستقیم باز شوند" to "Open Iranian sites directly"),

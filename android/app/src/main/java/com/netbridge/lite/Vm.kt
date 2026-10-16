@@ -170,6 +170,14 @@ class Vm(app: Application) : AndroidViewModel(app) {
         clipText = text; set { it.copy(clipNew = n) }
     }
 
+    /** Adds configs found in the clipboard by itself, once per copied text. Quiet when nothing is new. */
+    fun autoClip(text: String?, onDone: (String, Int) -> Unit) {
+        if (text.isNullOrBlank() || text == clipSeen || text.length > 400_000) return
+        if (!Regex("(vless|vmess|trojan|ss)://", RegexOption.IGNORE_CASE).containsMatchIn(text)) return
+        clipSeen = text
+        addText(text, onDone)
+    }
+
     fun addClip(onDone: (String, Int) -> Unit) { clipSeen = clipText; set { it.copy(clipNew = 0) }; addText(clipText, onDone) }
     fun dismissClip() { clipSeen = clipText; set { it.copy(clipNew = 0) } }
 }
