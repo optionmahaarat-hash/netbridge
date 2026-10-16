@@ -184,7 +184,7 @@ fun HomeScreen(vm: Vm, ui: Ui, onOrb: () -> Unit) {
                 }
             }
             Spacer(Modifier.weight(.55f))
-            Orb(ui.phase, onOrb, (LocalConfiguration.current.screenHeightDp.dp - 450.dp).coerceIn(150.dp, 262.dp))
+            Orb(ui.phase, onOrb, (LocalConfiguration.current.screenHeightDp.dp - 490.dp).coerceIn(150.dp, 262.dp))
             Spacer(Modifier.height(20.dp))
             StatusBlock(ui)
             Spacer(Modifier.weight(1f))
