@@ -26,3 +26,16 @@ def test_big_button_covers_states():
 
 def test_brand_html_has_both_words():
     assert "Net" in theme.BRAND_HTML and "Bridge" in theme.BRAND_HTML
+
+
+def test_lite_idle_button_is_not_green_and_connected_is():
+    import re
+    src = open("app/lite/window.py", encoding="utf-8").read()
+    m = re.search(r"BTN = \{IDLE: theme\.(\w+), FINDING: theme\.(\w+), CONNECTED: theme\.(\w+)\}", src)
+    assert m and m.groups() == ("GRAD_BLUE", "GRAD_AMBER", "GRAD_GREEN")
+
+
+def test_main_window_connect_button_follows_the_state():
+    src = open("app/ui/main_window.py", encoding="utf-8").read()
+    assert "theme.GRAD_GREEN if connected else theme.GRAD_BLUE" in src
+    assert src.count("self._style_connect(True)") >= 1 and src.count("self._style_connect(False)") >= 2

@@ -385,7 +385,7 @@ class MainWindow(QMainWindow):
         self.mode.currentIndexChanged.connect(self.mode_changed)
         rl.addWidget(QLabel("Connection mode:")); rl.addWidget(self.mode)
         self.connect_btn = QPushButton("CONNECT")
-        self.connect_btn.setMinimumHeight(52); self.connect_btn.clicked.connect(self.toggle)
+        self.connect_btn.setMinimumHeight(52); self.connect_btn.clicked.connect(self.toggle); self._style_connect(False)
         rl.addWidget(self.connect_btn)
         self.sys_proxy = QCheckBox("Set Windows system proxy when connecting")
         self.sys_proxy.setChecked(system_proxy.supported())
@@ -739,6 +739,10 @@ class MainWindow(QMainWindow):
             self.test_all(then_connect=True); return
         self.connect_()
 
+    def _style_connect(self, connected):
+        """Blue while not connected, green once connected (green is the colour people expect for 'connected')."""
+        self.connect_btn.setStyleSheet(theme.big_button(theme.GRAD_GREEN if connected else theme.GRAD_BLUE, radius=12, size=16))
+
     # ---------- WARP through the Aether core ----------
     def warp_aether(self):
         if getattr(self, "aetherw", None) and self.aetherw.isRunning():
@@ -774,7 +778,7 @@ class MainWindow(QMainWindow):
     def disconnect_(self):
         self.aether.stop()
         self.xray.stop(); self.timer.stop(); self._proxy(False)
-        self.connect_btn.setText("CONNECT"); self.status.setText("Status: Disconnected")
+        self.connect_btn.setText("CONNECT"); self._style_connect(False); self.status.setText("Status: Disconnected")
         self.log.append("Xray stopped.")
 
     def connect_(self, profile=None, pool=None):
@@ -811,13 +815,13 @@ class MainWindow(QMainWindow):
             self.xray.start(self.active_config)
             self.timer.start(100)
             self._proxy(True)
-            self.connect_btn.setText("DISCONNECT")
+            self.connect_btn.setText("DISCONNECT"); self._style_connect(True)
             self.status.setText(f"Status: running ({note}) - SOCKS 127.0.0.1:{self.socks_port}  HTTP {self.http_port}")
             self.log.append(f"Xray started: {note}")
         except Exception as e:
             if not self.xray.running:
                 self.timer.stop(); self._proxy(False)
-                self.connect_btn.setText("CONNECT"); self.status.setText("Status: Disconnected")
+                self.connect_btn.setText("CONNECT"); self._style_connect(False); self.status.setText("Status: Disconnected")
             QMessageBox.critical(self, "Start error", str(e))
 
     def pin_certs(self):
@@ -1065,7 +1069,7 @@ class MainWindow(QMainWindow):
             self.log.append(line)
         if self.connect_btn.text() == "DISCONNECT" and not self.xray.running:
             self.timer.stop(); self._proxy(False)
-            self.connect_btn.setText("CONNECT"); self.status.setText("Status: Disconnected (Xray stopped)")
+            self.connect_btn.setText("CONNECT"); self._style_connect(False); self.status.setText("Status: Disconnected (Xray stopped)")
             tail = [l for l in lines if l and "exited" not in l][-1:] or ["(no message)"]
             self.log.append("Xray stopped unexpectedly, system proxy switched OFF. " + tail[0][-300:])
             QMessageBox.warning(self, "NetBridge", "The connection failed to start.\n\n" + tail[0][-400:])
