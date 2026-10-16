@@ -16,7 +16,8 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setApplicationName("NetBridge")
     app.setWindowIcon(app_icon())      # every window and dialog inherits it
-    app.setStyle("Fusion")
+    from app.ui import theme
+    theme.apply(app)               # NetBridge look (navy + blue + amber), also sets Fusion
     w = MainWindow()
     w.show()
     sys.exit(app.exec())

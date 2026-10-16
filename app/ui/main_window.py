@@ -9,6 +9,9 @@ from PySide6.QtWidgets import (
 import json
 import html
 from app.core.bypass import PRESETS, CIPHER_SUITES, FM_STANDARD, FM_PATTNG
+from app.core import bypass as bypass_mod, presets as presets_mod, worker_exit
+from app.ui import theme
+from app.core import aether as aether_mod
 from app.storage.profiles import load_profiles, save_profiles
 from app.utils.parser import parse_many
 from app.utils.validator import validate_profile
@@ -78,6 +81,8 @@ class BypassDialog(QDialog):
         self.ip.setPlaceholderText("Clean Cloudflare IP (optional) - SNI/Host stay unchanged")
         self.ech = QLineEdit(profile.get("ech", ""))
         self.ech.setPlaceholderText("ECH config list, e.g. cloudflare-ech.com+https://1.1.1.1/dns-query  (empty = off)")
+        self.wexit = QLineEdit(profile.get("worker_exit", ""))
+        self.wexit.setPlaceholderText("Worker exit (optional): proxyip=1.2.3.4:443  or  socks5=user:pass@host:1080  or  http=host:8080")
         self.chain = QComboBox(); self.chain.addItem("(none)", "")
         for q in profiles:
             if _pkey(q) != _pkey(profile):
@@ -86,6 +91,7 @@ class BypassDialog(QDialog):
         form.addRow("Mode:", self.mode)
         form.addRow("Clean IP:", self.ip)
         form.addRow("ECH:", self.ech)
+        form.addRow("Worker exit:", self.wexit)
         form.addRow("Chain via (first hop):", self.chain)
         lay.addLayout(form)
         lay.addWidget(QLabel("finalMask (JSON) - used in Custom mode:"))
@@ -93,18 +99,26 @@ class BypassDialog(QDialog):
         lay.addWidget(QLabel("cipherSuites (colon-separated, no spaces) - used in Custom mode:"))
         self.cs = QTextEdit(); self.cs.setPlainText(profile.get("cs", "")); lay.addWidget(self.cs)
         row = QHBoxLayout()
-        for txt, fm in [("Fill standard fragment", FM_STANDARD), ("Fill PattNG fragment", FM_PATTNG)]:
-            b = QPushButton(txt); b.clicked.connect(lambda _=False, f=fm: self.fm.setPlainText(json.dumps(f)))
+        # the values come from the preset files (updatable); the compiled-in ones are only the fallback
+        def preset_value(name, key, fallback):
+            p = bypass_mod.get_preset(name) or {}
+            return p.get(key) or fallback
+        for txt, name, fb in [("Fill standard fragment", "standard", FM_STANDARD), ("Fill PattNG fragment", "pattng", FM_PATTNG)]:
+            b = QPushButton(txt)
+            b.clicked.connect(lambda _=False, n=name, f=fb: self.fm.setPlainText(json.dumps(preset_value(n, "finalmask", f))))
             row.addWidget(b)
-        b = QPushButton("Fill cipherSuites"); b.clicked.connect(lambda: self.cs.setPlainText(CIPHER_SUITES)); row.addWidget(b)
+        b = QPushButton("Fill cipherSuites")
+        b.clicked.connect(lambda: self.cs.setPlainText(preset_value("pattng", "cipherSuites", CIPHER_SUITES))); row.addWidget(b)
         lay.addLayout(row)
         lay.addWidget(QLabel("Needs a TLS config. Result depends on operator/city; no guarantee."))
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.accept); bb.rejected.connect(self.reject); lay.addWidget(bb)
 
     def apply(self, p):
+        wexit = worker_exit.normalize(self.wexit.text())       # raises ValueError BEFORE anything is changed
         p["bypass"] = self.mode.currentData()
         for k, v in [("address_override", self.ip.text().strip()),
+                     ("worker_exit", wexit),
                      ("ech", self.ech.text().strip()),
                      ("chain_key", self.chain.currentData() or ""),
                      ("fm", self.fm.toPlainText().strip()),
@@ -127,6 +141,39 @@ class IpWorker(QThread):
             self.done.emit(full_report(self.proxy))
         except Exception as e:
             self.done.emit(f"Exit check failed: {e}")
+
+
+class PresetWorker(QThread):
+    """Downloads the bypass values file (see app/core/presets.py). Only the network part runs here;
+    the result is applied in the window (UI thread), so the menus never see a half-changed list."""
+    done = Signal(object)                      # ("updated"|"current", doc, errors)  or  an error text
+    def __init__(self, current_version, proxy, parent=None):
+        super().__init__(parent); self.current, self.proxy = current_version, proxy
+    def run(self):
+        try:
+            self.done.emit(presets_mod.update(self.current, proxy=self.proxy))
+        except Exception as e:
+            self.done.emit(f"{e}")
+
+
+class AetherWorker(QThread):
+    """Installs the Aether core when it is missing, then starts it and waits for its SOCKS5 port.
+    Runs off the UI thread: the first start scans for a gateway and can take a minute."""
+    status = Signal(str)
+    done = Signal(object)                      # the port (int) or an error text
+    def __init__(self, manager, proxy, parent=None):
+        super().__init__(parent); self.mgr, self.proxy, self._stop = manager, proxy, False
+    def stop(self):
+        self._stop = True
+    def run(self):
+        try:
+            if not aether_mod.installed():
+                path, tag = aether_mod.download_core(proxy=self.proxy, progress=self.status.emit)
+                self.status.emit(f"Aether {tag} installed: {path}")
+            port = self.mgr.start(cancelled=lambda: self._stop, progress=self.status.emit)
+            self.done.emit(port)
+        except Exception as e:
+            self.done.emit(str(e))
 
 
 class PinWorker(QThread):
@@ -268,6 +315,7 @@ class MainWindow(QMainWindow):
         self.settings = load_settings()
         self.view = []; self.worker = None; self.auto_worker = None; self._auto_wins = []; self.pending_best = False; self._done = 0; self._total = 0
         self.xray = XrayManager()
+        self.aether = aether_mod.AetherManager()
         self.socks_port, self.http_port = ports.SOCKS, ports.HTTP
         self.active_config = Path("configs/active.json")
         self.check_config_path = Path("configs/check.json")      # validation writes here, never over the live config
@@ -281,7 +329,8 @@ class MainWindow(QMainWindow):
         left = QWidget(); ll = QVBoxLayout(left)
         head = QHBoxLayout()
         logo = QLabel(); logo.setPixmap(logo_pixmap("mark.png", 38))
-        head.addWidget(logo); head.addWidget(QLabel("<h2>NetBridge</h2>")); head.addStretch(1)
+        brand = QLabel(theme.BRAND_HTML); brand.setObjectName("brand")
+        head.addWidget(logo); head.addWidget(brand); head.addStretch(1)
         ll.addLayout(head)
         gr = QHBoxLayout()
         self.group_combo = QComboBox(); self.group_combo.currentIndexChanged.connect(self.group_changed)
@@ -295,6 +344,7 @@ class MainWindow(QMainWindow):
         for txt, fn in [("Add", self.add), ("Subscription", self.subscription),
                         ("Import file", self.import_file), ("Delete", self.delete)]:
             b = QPushButton(txt); b.clicked.connect(fn); r1.addWidget(b)
+            if txt == "Delete": b.setObjectName("danger")
         ll.addLayout(r1)
         r2 = QHBoxLayout()
         for txt, fn in [("Edit", self.edit), ("Bypass", self.bypass),
@@ -303,7 +353,7 @@ class MainWindow(QMainWindow):
         ll.addLayout(r2)
         r_auto = QHBoxLayout()
         self.auto_btn = QPushButton("AUTO: find the working method + connect")
-        self.auto_btn.setMinimumHeight(38); self.auto_btn.clicked.connect(self.auto_bypass)
+        self.auto_btn.setMinimumHeight(44); self.auto_btn.setObjectName("primary"); self.auto_btn.clicked.connect(self.auto_bypass)
         r_auto.addWidget(self.auto_btn)
         r3 = QHBoxLayout()
         b = QPushButton("Bypass all TLS"); b.clicked.connect(self.bypass_all); r3.addWidget(b)
@@ -313,12 +363,16 @@ class MainWindow(QMainWindow):
         r4 = QHBoxLayout()
         self.pin_btn = QPushButton("Pin certs (self-signed servers)"); self.pin_btn.clicked.connect(lambda: self.pin_certs())
         r4.addWidget(self.pin_btn)
+        self.preset_btn = QPushButton("Update bypass values (finalMask / ciphers)")
+        self.preset_btn.clicked.connect(self.update_presets); r4.addWidget(self.preset_btn)
         r5 = QHBoxLayout()
         b = QPushButton("Select all"); b.clicked.connect(lambda: self.list.selectAll()); r5.addWidget(b)
         b = QPushButton("Select failed (x)"); b.clicked.connect(self.select_failed); r5.addWidget(b)
         self.tls_btn = QPushButton("Convert non-TLS to TLS (try)"); self.tls_btn.clicked.connect(self.convert_tls); r5.addWidget(self.tls_btn)
         r6 = QHBoxLayout()
         b = QPushButton("Select non-TLS (plain) profiles"); b.clicked.connect(self.select_plain); r6.addWidget(b)
+        self.warp_btn = QPushButton("WARP (Aether core)"); self.warp_btn.setObjectName("primary")
+        self.warp_btn.clicked.connect(self.warp_aether); r6.addWidget(self.warp_btn)
         ll.addLayout(r_auto); ll.addLayout(r3); ll.addLayout(r4); ll.addLayout(r5); ll.addLayout(r6)
         splitter.addWidget(left)
 
@@ -536,7 +590,7 @@ class MainWindow(QMainWindow):
             return
         p2 = profiles[0]
         if d.value()[0]: p2["name"] = d.value()[0]
-        for k in ("group", "bypass", "address_override", "delay", "ech", "chain_key", "early_data", "early_data_header"):
+        for k in ("group", "bypass", "address_override", "delay", "ech", "chain_key", "early_data", "early_data_header", "worker_exit"):
             if k in p and k not in p2: p2[k] = p[k]
         if (p.get("server"), p.get("port")) == (p2.get("server"), p2.get("port")):   # same server: its pinned certificate is still valid
             for k in ("insecure", "pcs"):
@@ -685,7 +739,40 @@ class MainWindow(QMainWindow):
             self.test_all(then_connect=True); return
         self.connect_()
 
+    # ---------- WARP through the Aether core ----------
+    def warp_aether(self):
+        if getattr(self, "aetherw", None) and self.aetherw.isRunning():
+            return
+        if not aether_mod.installed():
+            if QMessageBox.question(self, "WARP (Aether)",
+                    "WARP uses the separate open-source program Aether (AGPL-3.0, github.com/CluvexStudio/Aether).\n\n"
+                    "It is not part of NetBridge. It will be downloaded now from its official GitHub releases (about 20 MB), "
+                    "checked with its SHA-256 and kept in cores/aether/. Continue?") != QMessageBox.Yes:
+                return
+        self.warp_btn.setEnabled(False)
+        self.aetherw = AetherWorker(self.aether, self.proxy_url_for_download(), self)
+        self.aetherw.status.connect(self.log.append)
+        self.aetherw.done.connect(self._warp_ready)
+        self.aetherw.start()
+
+    def proxy_url_for_download(self):
+        return f"http://127.0.0.1:{self.http_port}" if self.xray.running else None
+
+    def _warp_ready(self, result):
+        self.warp_btn.setEnabled(True)
+        if not isinstance(result, int):
+            QMessageBox.warning(self, "WARP (Aether)", str(result)); return
+        p = next((q for q in self.profiles if aether_mod.is_aether(q)), None)
+        if p is None:
+            p = aether_mod.warp_profile(result)
+            self.profiles.append(p)
+        p["port"] = result
+        save_profiles(self.profiles); self.refresh(keep=p)
+        self.log.append(f"Aether is ready: SOCKS5 127.0.0.1:{result}. Connecting through it ...")
+        self.connect_(profile=p)
+
     def disconnect_(self):
+        self.aether.stop()
         self.xray.stop(); self.timer.stop(); self._proxy(False)
         self.connect_btn.setText("CONNECT"); self.status.setText("Status: Disconnected")
         self.log.append("Xray stopped.")
@@ -715,6 +802,10 @@ class MainWindow(QMainWindow):
             if (self.socks_port, self.http_port) != (ports.SOCKS, ports.HTTP):
                 who = ports.port_owner(ports.HTTP) or ports.port_owner(ports.SOCKS) or "another program"
                 self.log.append(f"Ports {ports.SOCKS}/{ports.HTTP} are in use by {who}. Using {self.socks_port}/{self.http_port} instead.")
+            if any(aether_mod.is_aether(q) for q in profs) and not self.aether.running:
+                QMessageBox.information(self, "NetBridge", "The WARP profile needs the Aether core running. Press the 'WARP (Aether core)' button."); return
+            if not any(aether_mod.is_aether(q) for q in profs) and self.aether.running:
+                self.aether.stop()
             write_config(profs, self.active_config, self.settings, mode=cmode, pin_profile=self._pin_profile(), all_profiles=self.profiles,
                          socks_port=self.socks_port, http_port=self.http_port)
             self.xray.start(self.active_config)
@@ -756,6 +847,28 @@ class MainWindow(QMainWindow):
         self.log.append(f"Pinned {self._pin_ok}, failed {self._pin_bad}."
                         + (" Failed servers are offline or need a different obfs/port; press the button to retry." if self._pin_bad else ""))
 
+    def update_presets(self):
+        """Fetch newer bypass values (through the tunnel if connected, else directly) and apply them."""
+        self.preset_btn.setEnabled(False)
+        proxy = self.proxy_url() if self.xray.running else None
+        self.log.append(f"Updating bypass values (now version {bypass_mod.STATE['version']}) ...")
+        self.prw = PresetWorker(bypass_mod.STATE["version"], proxy, self)
+        self.prw.done.connect(self._presets_done); self.prw.start()
+
+    def _presets_done(self, res):
+        self.preset_btn.setEnabled(True)
+        if isinstance(res, str):
+            self.log.append("Bypass values: update failed - " + res); return
+        status, doc, errs = res
+        if status == "updated":
+            bypass_mod.reload()
+            self.log.append(f"Bypass values updated to version {doc['version']} "
+                            f"({', '.join(doc['presets'])}). Run AUTO again, or pick the method in Bypass.")
+        else:
+            self.log.append(f"Bypass values are already the newest (version {bypass_mod.STATE['version']}).")
+        for e in errs + bypass_mod.STATE["errors"]:
+            self.log.append("  skipped: " + e)
+
     def check_ip(self):
         if not self.xray.running:
             QMessageBox.information(self, "NetBridge", "Connect first."); return
@@ -785,8 +898,9 @@ class MainWindow(QMainWindow):
         p = self.selected()
         if not p:
             QMessageBox.information(self, "NetBridge", "Select a profile first."); return
-        cf = [q for q in self.profiles if ipscan.looks_cloudflare(q)]
-        d = ScanDialog(p, len(cf), self)
+        grp = self.group_combo.currentData() or ""      # the group shown in the list (a subscription); "" = all
+        cf = ipscan.cloudflare_in_group(self.profiles, grp)
+        d = ScanDialog(p, len(cf), self, group=grp)
         d.exec()
         if not d.action: return
         kind, val = d.action
@@ -794,12 +908,12 @@ class MainWindow(QMainWindow):
             p["address_override"] = val
             msg = f"Clean IP {val} set for '{p.get('name')}'."
         else:
+            scope = f"group '{grp}'" if grp else "all groups"
             if QMessageBox.question(self, "NetBridge",
-                    f"Set Clean IP on {len(cf)} Cloudflare profile(s), using {len(val)} tested IP(s)?\n"
-                    "Existing Clean IP values of those profiles will be replaced.") != QMessageBox.Yes:
+                    f"Set Clean IP on {len(cf)} Cloudflare profile(s) of {scope}, using {len(val)} tested IP(s)?\n"
+                    "Existing Clean IP values of those profiles will be replaced. Other groups are not touched.") != QMessageBox.Yes:
                 return
-            for n, q in enumerate(cf):
-                q["address_override"] = val[n % len(val)]
+            ipscan.spread_clean_ips(self.profiles, val, grp)
             msg = f"Clean IPs applied to {len(cf)} profile(s): " + ", ".join(val)
         save_profiles(self.profiles); self.select(0)
         self.log.append(msg + (" Reconnect to use it." if self.xray.running else ""))
@@ -966,4 +1080,7 @@ class MainWindow(QMainWindow):
             if w is not None and w.isRunning():
                 if hasattr(w, "stop"): w.stop()
                 w.wait(wait)
-        self.xray.stop(); self._proxy(False); save_profiles(self.profiles); e.accept()
+        w = getattr(self, "aetherw", None)
+        if w is not None and w.isRunning():
+            w.stop(); w.wait(8000)
+        self.aether.stop(); self.xray.stop(); self._proxy(False); save_profiles(self.profiles); e.accept()

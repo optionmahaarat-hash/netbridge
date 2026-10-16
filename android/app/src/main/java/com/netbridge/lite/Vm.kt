@@ -29,6 +29,7 @@ class Vm(app: Application) : AndroidViewModel(app) {
     val ui = MutableStateFlow(Ui(profiles = profiles.toList(), selected = store.selected, iran = store.iranDirect, lang = store.lang))
 
     init {
+        Presets.load(app)
         viewModelScope.launch {
             VpnSvc.connected.collect { c ->
                 val ph = ui.value.phase
@@ -128,7 +129,7 @@ class Vm(app: Application) : AndroidViewModel(app) {
                         Net.fetchSubscription(t, if (ui.value.phase == Phase.CONNECTED) VpnSvc.httpPort else null)
                     }
                     val n = merge(found)
-                    if (n >= 0) store.subs = (store.subs + t).distinct()
+                    if (found.isNotEmpty()) store.subs = (store.subs + t).distinct()   // never keep a link that gave no server
                     onDone(if (found.isEmpty()) "no_valid" else "added", n)
                 } catch (e: Exception) { onDone("sub_fail", 0) }
             }
@@ -167,6 +168,16 @@ class Vm(app: Application) : AndroidViewModel(app) {
         val have = profiles.map { profileKey(it) }.toSet()
         val n = found.count { profileKey(it) !in have }
         clipText = text; set { it.copy(clipNew = n) }
+    }
+
+    /** Adds configs found in the clipboard by itself, once per copied text. Quiet when nothing is new. */
+    fun autoClip(text: String?, onDone: (String, Int) -> Unit) {
+        if (text.isNullOrBlank() || text == clipSeen || text.length > 400_000) return
+        val t = text.trim()
+        val isSubUrl = t.length < 2000 && Regex("^https?://\\S+$").matches(t) && "://" !in t.substring(t.indexOf("://") + 3)
+        if (!isSubUrl && !Regex("(vless|vmess|trojan|ss)://", RegexOption.IGNORE_CASE).containsMatchIn(text)) return
+        clipSeen = text
+        addText(text, onDone)
     }
 
     fun addClip(onDone: (String, Int) -> Unit) { clipSeen = clipText; set { it.copy(clipNew = 0) }; addText(clipText, onDone) }

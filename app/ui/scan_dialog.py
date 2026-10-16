@@ -1,6 +1,6 @@
 from PySide6.QtCore import QThread, Signal, Qt
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSpinBox, QPushButton, QProgressBar,
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSpinBox, QPushButton, QProgressBar, QCheckBox,
     QListWidget, QListWidgetItem, QApplication, QMessageBox,
 )
 from app.core import ipscan
@@ -10,16 +10,19 @@ class ScanWorker(QThread):
     found = Signal(str, int, str)       # ip, ms, colo
     progress = Signal(int, int)         # done, total
 
-    def __init__(self, count, port, sni, parent=None):
+    def __init__(self, count, port, sni, parent=None, ipv6=False):
         super().__init__(parent)
-        self.count, self.port, self.sni = count, port, sni
+        self.count, self.port, self.sni, self.ipv6 = count, port, sni, ipv6
         self._stop = False
 
     def stop(self):
         self._stop = True
 
     def run(self):
-        ips = ipscan.sample_ips(ipscan.load_ranges(), self.count)
+        ranges = ipscan.load_ranges()
+        if self.ipv6:
+            ranges = ranges + ipscan.load_ranges6()          # half of the IPs are IPv6 (see ipscan.sample_ips)
+        ips = ipscan.sample_ips(ranges, self.count)
         ipscan.scan(ips, self.port, self.sni,
                     on_result=lambda ip, ms, colo: self.found.emit(ip, ms, colo),
                     on_progress=lambda d, t: self.progress.emit(d, t),
@@ -30,7 +33,7 @@ class ScanDialog(QDialog):
     """Finds Cloudflare IPs that work from your ISP for the selected profile.
     After exec(): self.action is None, ("one", ip) or ("many", [ips])."""
 
-    def __init__(self, profile, n_cf_profiles, parent=None):
+    def __init__(self, profile, n_cf_profiles, parent=None, group=""):
         super().__init__(parent)
         self.setWindowTitle("Clean IP scanner (Cloudflare)")
         self.resize(560, 560)
@@ -42,11 +45,16 @@ class ScanDialog(QDialog):
         if not ipscan.looks_cloudflare(profile):
             w = QLabel("This profile does not look like a Cloudflare config (TLS on a Cloudflare port). "
                        "The scan only makes sense for Workers / Pages / Cloudflare-CDN profiles.")
-            w.setWordWrap(True); w.setStyleSheet("color:#b26a00"); lay.addWidget(w)
+            w.setWordWrap(True); w.setStyleSheet("color:#FFB020"); lay.addWidget(w)
         row = QHBoxLayout()
         row.addWidget(QLabel("IPs to test:"))
         self.count = QSpinBox(); self.count.setRange(20, 3000); self.count.setValue(300); self.count.setSingleStep(100)
-        row.addWidget(self.count); row.addStretch()
+        row.addWidget(self.count)
+        self.v6 = QCheckBox("Include IPv6")
+        ok6 = ipscan.has_ipv6()
+        self.v6.setChecked(ok6); self.v6.setEnabled(ok6)
+        self.v6.setToolTip("Half of the tested IPs are IPv6." if ok6 else "This computer has no IPv6 route to the internet.")
+        row.addWidget(self.v6); row.addStretch()
         self.start_btn = QPushButton("Start scan"); self.start_btn.clicked.connect(self.start)
         self.stop_btn = QPushButton("Stop"); self.stop_btn.clicked.connect(self.stop); self.stop_btn.setEnabled(False)
         row.addWidget(self.start_btn); row.addWidget(self.stop_btn)
@@ -57,7 +65,7 @@ class ScanDialog(QDialog):
         self.list = QListWidget(); lay.addWidget(self.list)
         row2 = QHBoxLayout()
         self.one_btn = QPushButton("Use selected IP for this profile"); self.one_btn.clicked.connect(self.use_one)
-        self.many_btn = QPushButton(f"Spread best IPs over {n_cf_profiles} Cloudflare profile(s)")
+        self.many_btn = QPushButton(f"Spread best IPs over {n_cf_profiles} Cloudflare profile(s)" + (f" of group '{group}'" if group else ""))
         self.many_btn.clicked.connect(self.use_many); self.many_btn.setEnabled(n_cf_profiles > 0)
         row2.addWidget(self.one_btn); row2.addWidget(self.many_btn)
         lay.addLayout(row2)
@@ -67,7 +75,7 @@ class ScanDialog(QDialog):
     # -- scanning
     def start(self):
         self.list.clear(); self.bar.setValue(0)
-        self.worker = ScanWorker(self.count.value(), self.port, self.sni, self)
+        self.worker = ScanWorker(self.count.value(), self.port, self.sni, self, ipv6=self.v6.isChecked())
         self.worker.found.connect(self.on_found)
         self.worker.progress.connect(self.on_progress)
         self.worker.finished.connect(self.on_finished)
@@ -80,7 +88,7 @@ class ScanDialog(QDialog):
         self.stop_btn.setEnabled(False)
 
     def on_found(self, ip, ms, colo):
-        item = QListWidgetItem(f"{ms:>5} ms    {ip:<16}  {colo}")
+        item = QListWidgetItem(f"{ms:>5} ms    {ip:<40}  {colo}")
         item.setData(Qt.UserRole, (ms, ip))
         pos = self.list.count()
         for i in range(self.list.count()):          # keep sorted: fastest first

@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 CF_PORTS = {443, 8443, 2053, 2083, 2087, 2096}
 RANGES_URL = "https://www.cloudflare.com/ips-v4"
+RANGES6_URL = "https://www.cloudflare.com/ips-v6"
 
 # Cloudflare's published IPv4 ranges (fallback when the list cannot be downloaded)
 FALLBACK_RANGES = [
@@ -26,20 +27,54 @@ FALLBACK_RANGES = [
 ]
 
 
-def load_ranges(timeout=6):
-    """Official list if reachable, else the built-in one."""
+# Cloudflare's published IPv6 ranges (fallback). The IPv4 restriction reported in the PattNG channel (upload limit
+# of ~6 packets, IPv4 only so far) makes an IPv6 entry point worth trying - when this phone/PC really has IPv6.
+FALLBACK_RANGES6 = [
+    "2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32",
+    "2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32",
+]
+
+
+def _load(url, fallback, version, timeout):
     try:
-        t = urllib.request.urlopen(RANGES_URL, timeout=timeout).read().decode()
+        t = urllib.request.urlopen(url, timeout=timeout).read().decode()
         r = [x.strip() for x in t.splitlines() if "/" in x]
-        ipaddress.ip_network(r[0])
+        if not r or any(ipaddress.ip_network(x).version != version for x in r):
+            raise ValueError("unexpected list")
         return r
     except Exception:
-        return list(FALLBACK_RANGES)
+        return list(fallback)
 
 
-def sample_ips(ranges, n, rng=random):
-    """n distinct random IPs, spread over the ranges proportionally to their size."""
-    nets = [ipaddress.ip_network(r) for r in ranges]
+def load_ranges(timeout=6):
+    """Official IPv4 list if reachable, else the built-in one."""
+    return _load(RANGES_URL, FALLBACK_RANGES, 4, timeout)
+
+
+def load_ranges6(timeout=6):
+    """Official IPv6 list if reachable, else the built-in one."""
+    return _load(RANGES6_URL, FALLBACK_RANGES6, 6, timeout)
+
+
+def has_ipv6():
+    """True if this machine has an IPv6 route to the internet. Nothing is sent: a UDP connect() only asks the routing table."""
+    s = None
+    try:
+        s = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+        s.connect(("2606:4700:4700::1111", 53))
+        return True
+    except OSError:
+        return False
+    finally:
+        if s is not None:
+            s.close()
+
+
+def is_ipv6(ip):
+    return ":" in str(ip)
+
+
+def _sample(nets, n, rng):
     sizes = [net.num_addresses for net in nets]
     out, tries = set(), 0
     while len(out) < n and tries < n * 20:
@@ -49,6 +84,19 @@ def sample_ips(ranges, n, rng=random):
             continue
         out.add(str(net[rng.randrange(1, net.num_addresses - 1)]))   # skip network / broadcast
     return list(out)
+
+
+def sample_ips(ranges, n, rng=random, v6_share=0.5):
+    """n distinct random IPs, spread over the ranges proportionally to their size.
+    With both IPv4 and IPv6 ranges, `v6_share` of the IPs are IPv6 (an IPv6 range is billions of times bigger,
+    so by size alone it would crowd out IPv4 completely); inside each family the spread is by size."""
+    nets = [ipaddress.ip_network(r) for r in ranges]
+    v4 = [x for x in nets if x.version == 4]
+    v6 = [x for x in nets if x.version == 6]
+    if v4 and v6:
+        n6 = int(n * v6_share)
+        return _sample(v4, n - n6, rng) + _sample(v6, n6, rng)
+    return _sample(nets, n, rng)
 
 
 def parse_trace(text):
@@ -136,3 +184,29 @@ def scan_target(profile):
 
 def looks_cloudflare(profile):
     return str(profile.get("security", "")).lower() in ("tls",) and int(profile.get("port") or 0) in CF_PORTS
+
+
+def cloudflare_in_group(profiles, group=""):
+    """Cloudflare-looking TLS profiles of one group (a subscription). group "" = all profiles."""
+    return [q for q in profiles if looks_cloudflare(q) and (not group or q.get("group", "") == group)]
+
+
+def spread_clean_ips(profiles, ips, group=""):
+    """Gives the tested clean IPs to the Cloudflare profiles of `group` in turn (best IP first).
+    Returns the profiles that were changed. Profiles outside the group are never touched."""
+    ips = [i for i in ips if i]
+    if not ips:
+        return []
+    targets = cloudflare_in_group(profiles, group)
+    for n, q in enumerate(targets):
+        q["address_override"] = ips[n % len(ips)]
+    return targets
+
+
+def clear_clean_ips(profiles, group=""):
+    """Removes address_override from every profile of `group` (all when ""). Returns how many had one."""
+    n = 0
+    for q in profiles:
+        if (not group or q.get("group", "") == group) and q.get("address_override"):
+            q.pop("address_override"); n += 1
+    return n

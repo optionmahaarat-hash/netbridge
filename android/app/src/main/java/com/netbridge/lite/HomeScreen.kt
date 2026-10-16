@@ -24,12 +24,14 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
@@ -64,7 +66,7 @@ fun Logo(size: Int = 30) {
 }
 
 @Composable
-fun Orb(phase: Phase, onClick: () -> Unit) {
+fun Orb(phase: Phase, onClick: () -> Unit, diameter: Dp = 262.dp) {
     val inf = rememberInfiniteTransition(label = "orb")
     val rot by inf.animateFloat(0f, 360f, infiniteRepeatable(tween(2400, easing = LinearEasing)), label = "rot")
     val pulse by inf.animateFloat(0.6f, 1f, infiniteRepeatable(tween(2000, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "pulse")
@@ -72,7 +74,7 @@ fun Orb(phase: Phase, onClick: () -> Unit) {
     val on = phase == Phase.CONNECTED
     val icon by animateColorAsState(if (on) NB.GoldLight else if (busy) NB.Gold else NB.Muted, tween(500), label = "ic")
     Box(
-        Modifier.size(262.dp).clip(CircleShape)
+        Modifier.size(diameter).clip(CircleShape)
             .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
@@ -144,10 +146,20 @@ fun HomeScreen(vm: Vm, ui: Ui, onOrb: () -> Unit) {
     val clipboard = LocalClipboardManager.current
     var sheet by remember { mutableStateOf("") }          // "" | servers | add | settings
     val focused = LocalWindowInfo.current.isWindowFocused
-    LaunchedEffect(focused) { if (focused) { delay(300); vm.checkClip(clipboard.getText()?.text) } }
+    var clipNow by remember { mutableStateOf("") }          // read while the MAIN window has focus (a bottom sheet is a separate window and cannot read it)
 
     val toast = { text: String -> Toast.makeText(ctx, text, Toast.LENGTH_SHORT).show() }
     val addedTxt = t("added"); val noneTxt = t("nothing_new"); val badTxt = t("no_valid"); val subTxt = t("sub_fail")
+    val clipAddedTxt = t("clip_auto")
+    // a copied config is added by itself when the app comes to the front (Android only lets the focused window read the clipboard)
+    LaunchedEffect(focused) {
+        if (!focused) return@LaunchedEffect
+        delay(300)
+        var tx = clipboard.getText()?.text
+        if (tx == null) { delay(700); tx = clipboard.getText()?.text }
+        clipNow = tx ?: ""
+        vm.autoClip(tx) { k, n -> if (k == "added") toast("$n $clipAddedTxt") }
+    }
     val done: (String, Int) -> Unit = { k, n ->
         toast(when (k) { "added" -> "$n $addedTxt"; "nothing_new" -> noneTxt; "sub_fail" -> subTxt; else -> badTxt })
         if (k == "added") sheet = ""
@@ -172,20 +184,11 @@ fun HomeScreen(vm: Vm, ui: Ui, onOrb: () -> Unit) {
                 }
             }
             Spacer(Modifier.weight(.55f))
-            Orb(ui.phase, onOrb)
+            Orb(ui.phase, onOrb, (LocalConfiguration.current.screenHeightDp.dp - 490.dp).coerceIn(150.dp, 262.dp))
             Spacer(Modifier.height(20.dp))
             StatusBlock(ui)
             Spacer(Modifier.weight(1f))
 
-            if (ui.clipNew > 0) {
-                Glass(Modifier.fillMaxWidth().padding(bottom = 10.dp)) {
-                    Row(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text("${ui.clipNew} ${t("clip_found")}", color = NB.Text, fontSize = 13.sp, modifier = Modifier.weight(1f))
-                        TextButton(onClick = { vm.addClip(done) }) { Text(t("clip_add"), color = NB.Gold, fontWeight = FontWeight.Bold) }
-                        TextButton(onClick = { vm.dismissClip() }) { Text("✕", color = NB.Muted) }
-                    }
-                }
-            }
             // route card
             val selName = ui.profiles.firstOrNull { profileKey(it) == ui.selected }?.s("name")
             Glass(Modifier.fillMaxWidth(), onClick = { if (ui.phase == Phase.IDLE) sheet = "servers" }) {
@@ -204,7 +207,7 @@ fun HomeScreen(vm: Vm, ui: Ui, onOrb: () -> Unit) {
             // add button (gold outline)
             Box(Modifier.fillMaxWidth().height(52.dp).clip(RoundedCornerShape(18.dp))
                 .border(1.dp, GoldBrush, RoundedCornerShape(18.dp))
-                .clickable(enabled = ui.phase == Phase.IDLE) { sheet = "add" }, contentAlignment = Alignment.Center) {
+                .clickable(enabled = ui.phase == Phase.IDLE) { clipNow = clipboard.getText()?.text ?: clipNow; sheet = "add" }, contentAlignment = Alignment.Center) {
                 Text(t("add"), color = NB.GoldLight, fontSize = 15.sp, fontWeight = FontWeight.Medium, letterSpacing = .5.sp)
             }
             if (ui.profiles.isEmpty()) {
@@ -225,7 +228,7 @@ fun HomeScreen(vm: Vm, ui: Ui, onOrb: () -> Unit) {
         ) {
             when (sheet) {
                 "servers" -> ServersSheet(vm, ui) { sheet = "" }
-                "add" -> AddSheet(vm, clipboard.getText()?.text ?: "", done)
+                "add" -> AddSheet(vm, clipNow, done)
                 "settings" -> SettingsSheet(vm, ui, toast)
             }
         }
@@ -241,7 +244,7 @@ private fun SheetTitle(text: String) =
 private fun ServersSheet(vm: Vm, ui: Ui, close: () -> Unit) {
     Column(Modifier.fillMaxWidth().navigationBarsPadding()) {
         SheetTitle(t("servers"))
-        LazyColumn(Modifier.heightIn(max = 520.dp), contentPadding = PaddingValues(horizontal = 18.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        LazyColumn(Modifier.heightIn(max = (LocalConfiguration.current.screenHeightDp * 0.6f).dp), contentPadding = PaddingValues(horizontal = 18.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             item(key = "auto") { ServerRow(t("auto"), "", null, ui.selected == "auto", false, { vm.select("auto"); close() }, {}) }
             val sorted = ui.profiles.sortedBy { p -> val d = if (p.has("delay")) p.optInt("delay") else null; if (d == null) 1_000_000 else if (d < 0) 2_000_000 else d }
             items(sorted, key = { profileKey(it) }) { p ->
@@ -276,7 +279,7 @@ private fun ServerRow(name: String, sub: String, ping: Int?, selected: Boolean, 
 
 @Composable
 private fun AddSheet(vm: Vm, clip: String, done: (String, Int) -> Unit) {
-    var text by remember { mutableStateOf("") }
+    var text by remember { mutableStateOf(if ("://" in clip) clip else "") }
     Column(Modifier.fillMaxWidth().navigationBarsPadding().imePadding().padding(horizontal = 24.dp).padding(bottom = 24.dp)) {
         SheetTitle(t("add_title"))
         OutlinedTextField(

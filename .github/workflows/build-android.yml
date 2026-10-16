@@ -19,7 +19,7 @@ jobs:
           mkdir -p android/app/src/main/jniLibs/arm64-v8a android/app/src/main/assets
           cp xr/xray android/app/src/main/jniLibs/arm64-v8a/libxray.so
           cp xr/geoip.dat xr/geosite.dat android/app/src/main/assets/
-          cp assets/seed_profiles.json android/app/src/main/assets/
+          cp assets/seed_profiles.json assets/bypass_presets.json android/app/src/main/assets/
       - name: hev-socks5-tunnel (phone traffic -> Xray)
         run: |
           set -e
