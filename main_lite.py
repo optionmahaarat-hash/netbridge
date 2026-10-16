@@ -20,7 +20,8 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("NetBridge Lite")
-    app.setStyle("Fusion")
+    from app.ui import theme
+    theme.apply(app)               # NetBridge look (navy + blue + amber), also sets Fusion
     app.setWindowIcon(app_icon())
     try:                                                              # first run: start with the servers bundled in the installer
         from app.lite import updater

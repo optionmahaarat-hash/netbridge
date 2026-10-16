@@ -45,7 +45,7 @@ class ScanDialog(QDialog):
         if not ipscan.looks_cloudflare(profile):
             w = QLabel("This profile does not look like a Cloudflare config (TLS on a Cloudflare port). "
                        "The scan only makes sense for Workers / Pages / Cloudflare-CDN profiles.")
-            w.setWordWrap(True); w.setStyleSheet("color:#b26a00"); lay.addWidget(w)
+            w.setWordWrap(True); w.setStyleSheet("color:#FFB020"); lay.addWidget(w)
         row = QHBoxLayout()
         row.addWidget(QLabel("IPs to test:"))
         self.count = QSpinBox(); self.count.setRange(20, 3000); self.count.setValue(300); self.count.setSingleStep(100)

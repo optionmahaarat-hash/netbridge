@@ -10,6 +10,7 @@ import json
 import html
 from app.core.bypass import PRESETS, CIPHER_SUITES, FM_STANDARD, FM_PATTNG
 from app.core import bypass as bypass_mod, presets as presets_mod, worker_exit
+from app.ui import theme
 from app.storage.profiles import load_profiles, save_profiles
 from app.utils.parser import parse_many
 from app.utils.validator import validate_profile
@@ -306,7 +307,8 @@ class MainWindow(QMainWindow):
         left = QWidget(); ll = QVBoxLayout(left)
         head = QHBoxLayout()
         logo = QLabel(); logo.setPixmap(logo_pixmap("mark.png", 38))
-        head.addWidget(logo); head.addWidget(QLabel("<h2>NetBridge</h2>")); head.addStretch(1)
+        brand = QLabel(theme.BRAND_HTML); brand.setObjectName("brand")
+        head.addWidget(logo); head.addWidget(brand); head.addStretch(1)
         ll.addLayout(head)
         gr = QHBoxLayout()
         self.group_combo = QComboBox(); self.group_combo.currentIndexChanged.connect(self.group_changed)
@@ -320,6 +322,7 @@ class MainWindow(QMainWindow):
         for txt, fn in [("Add", self.add), ("Subscription", self.subscription),
                         ("Import file", self.import_file), ("Delete", self.delete)]:
             b = QPushButton(txt); b.clicked.connect(fn); r1.addWidget(b)
+            if txt == "Delete": b.setObjectName("danger")
         ll.addLayout(r1)
         r2 = QHBoxLayout()
         for txt, fn in [("Edit", self.edit), ("Bypass", self.bypass),
@@ -328,7 +331,7 @@ class MainWindow(QMainWindow):
         ll.addLayout(r2)
         r_auto = QHBoxLayout()
         self.auto_btn = QPushButton("AUTO: find the working method + connect")
-        self.auto_btn.setMinimumHeight(38); self.auto_btn.clicked.connect(self.auto_bypass)
+        self.auto_btn.setMinimumHeight(44); self.auto_btn.setObjectName("primary"); self.auto_btn.clicked.connect(self.auto_bypass)
         r_auto.addWidget(self.auto_btn)
         r3 = QHBoxLayout()
         b = QPushButton("Bypass all TLS"); b.clicked.connect(self.bypass_all); r3.addWidget(b)

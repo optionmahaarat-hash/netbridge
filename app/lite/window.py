@@ -17,10 +17,11 @@ from app.lite.version import LITE_VERSION
 from app.storage.profiles import load_profiles, save_profiles
 from app.ui.about_dialog import AboutDialog
 from app.ui.icon import app_icon, logo_pixmap
+from app.ui import theme
 from app.utils.latency import exit_info, real_delay
 
 IDLE, FINDING, CONNECTED = "idle", "finding", "connected"
-BTN = {IDLE: "#1f9d55", FINDING: "#d98324", CONNECTED: "#d64545"}
+BTN = {IDLE: theme.GRAD_BLUE, FINDING: theme.GRAD_AMBER, CONNECTED: theme.GRAD_GREEN}
 
 
 class Task(QThread):
@@ -70,23 +71,23 @@ class LiteWindow(QMainWindow):
         v = QVBoxLayout(root); v.setSpacing(10); v.setContentsMargins(16, 12, 16, 12)
         top = QHBoxLayout()
         logo = QLabel(); logo.setPixmap(logo_pixmap("mark.png", 40))
-        self.title = QLabel(); self.title.setStyleSheet("font-size:18px;font-weight:bold")
+        self.title = QLabel(theme.BRAND_HTML); self.title.setObjectName("brand")
         self.menu_btn = QToolButton(); self.menu_btn.setPopupMode(QToolButton.InstantPopup)
-        self.menu_btn.setStyleSheet("QToolButton{font-size:20px;border:none;padding:2px 8px}QToolButton::menu-indicator{image:none}")
+        self.menu_btn.setStyleSheet(f"QToolButton{{font-size:20px;color:{theme.CYAN};background:{theme.CARD};border:1px solid {theme.LINE};border-radius:9px;padding:2px 10px}}QToolButton:hover{{border:1px solid {theme.BLUE}}}QToolButton::menu-indicator{{image:none}}")
         top.addWidget(logo); top.addWidget(self.title); top.addStretch(1); top.addWidget(self.menu_btn)
         v.addLayout(top)
 
         self.empty = QLabel(); self.empty.setAlignment(Qt.AlignCenter); self.empty.setWordWrap(True)
-        self.empty.setStyleSheet("color:#666;padding:18px;border:1px dashed #bbb;border-radius:10px")
+        self.empty.setStyleSheet(f"color:{theme.MUTED};padding:18px;border:1px dashed {theme.LINE};border-radius:12px")
         v.addWidget(self.empty)
 
         self.status = QLabel(); self.status.setAlignment(Qt.AlignCenter); self.status.setWordWrap(True)
-        self.status.setStyleSheet("font-size:15px;font-weight:bold;padding:6px")
+        self.status.setStyleSheet("font-size:16px;font-weight:700;padding:6px")
         self.sub = QLabel(); self.sub.setAlignment(Qt.AlignCenter); self.sub.setWordWrap(True)
-        self.sub.setStyleSheet("color:#666")
+        self.sub.setStyleSheet(f"color:{theme.MUTED}")
         v.addWidget(self.status); v.addWidget(self.sub)
 
-        self.btn = QPushButton(); self.btn.setMinimumHeight(74); self.btn.clicked.connect(self.on_button)
+        self.btn = QPushButton(); self.btn.setMinimumHeight(84); self.btn.clicked.connect(self.on_button)
         v.addWidget(self.btn)
 
         row = QHBoxLayout()
@@ -99,13 +100,13 @@ class LiteWindow(QMainWindow):
         self.add_menu = QMenu(self); self.add_btn.setMenu(self.add_menu)
         v.addWidget(self.add_btn)
 
-        self.clip_bar = QFrame(); self.clip_bar.setStyleSheet("QFrame{background:#e8f3ff;border-radius:8px}")
+        self.clip_bar = QFrame(); self.clip_bar.setStyleSheet(f"QFrame{{background:{theme.CARD2};border:1px solid {theme.BLUE};border-radius:10px}}")
         cb = QHBoxLayout(self.clip_bar); self.clip_lbl = QLabel(); self.clip_go = QPushButton()
         self.clip_go.clicked.connect(self.add_clip_banner)
         cb.addWidget(self.clip_lbl, 1); cb.addWidget(self.clip_go)
         self.clip_bar.hide(); v.addWidget(self.clip_bar)
 
-        self.upd_bar = QFrame(); self.upd_bar.setStyleSheet("QFrame{background:#e9f8ee;border-radius:8px}")
+        self.upd_bar = QFrame(); self.upd_bar.setStyleSheet(f"QFrame{{background:{theme.CARD};border:1px solid {theme.GREEN};border-radius:10px}}")
         ub = QHBoxLayout(self.upd_bar); self.upd_lbl = QLabel(); self.upd_go = QPushButton()
         self.upd_go.clicked.connect(self.install_update)
         ub.addWidget(self.upd_lbl, 1); ub.addWidget(self.upd_go)
@@ -119,14 +120,15 @@ class LiteWindow(QMainWindow):
         if not system_proxy.supported():
             self.sysp.setEnabled(False)
         v.addWidget(self.iran); v.addWidget(self.sysp)
-        self.foot = QLabel(); self.foot.setAlignment(Qt.AlignCenter); self.foot.setStyleSheet("color:#999;font-size:11px")
+        self.foot = QLabel(); self.foot.setAlignment(Qt.AlignCenter); self.foot.setStyleSheet(f"color:{theme.MUTED};font-size:11px")
         v.addWidget(self.foot)
 
     def apply_texts(self):
         app = QApplication.instance()
         app.setLayoutDirection(Qt.RightToLeft if lang() == "fa" else Qt.LeftToRight)
         self.setWindowTitle(tr("app"))
-        self.title.setText(tr("app"))
+        self.title.setText(theme.BRAND_HTML + f"<span style='font-size:13px;color:{theme.MUTED}'> Lite</span>"
+                           if lang() != "fa" else tr("app"))
         self.menu_btn.setText(tr("menu")); self.add_btn.setText(tr("add")); self.server_lbl.setText(tr("server"))
         self.iran.setText(tr("iran")); self.sysp.setText(tr("sysproxy")); self.clip_go.setText(tr("clip_add"))
         self.empty.setText(tr("empty")); self.upd_go.setText(tr("upd_btn"))
@@ -148,8 +150,7 @@ class LiteWindow(QMainWindow):
         self.state = st
         text = {IDLE: tr("connect"), FINDING: tr("cancel"), CONNECTED: tr("disconnect")}[st]
         self.btn.setText(text)
-        self.btn.setStyleSheet(f"QPushButton{{background:{BTN[st]};color:white;font-size:22px;font-weight:bold;border-radius:14px}}"
-                               "QPushButton:disabled{background:#999}")
+        self.btn.setStyleSheet(theme.big_button(BTN[st]))
         if st == IDLE:
             self.status.setText(tr("st_idle")); self.sub.setText("")
         elif st == FINDING:
