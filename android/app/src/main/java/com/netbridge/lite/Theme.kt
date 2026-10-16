@@ -57,6 +57,7 @@ private val S: Map<String, Pair<String, String>> = mapOf(
     "warn_plain" to ("هشدار: فقط سرورهای بدون رمزنگاری جواب دادند" to "Warning: only unencrypted servers answered"),
     "start_fail" to ("اتصال برقرار نشد" to "Could not connect"),
     "clip_found" to ("کانفیگ در کلیپ‌بورد پیدا شد" to "config(s) found in the clipboard"),
+    "clip_empty" to ("کلیپ‌بورد خالی است؛ اول کانفیگ را کپی کنید" to "Clipboard is empty - copy a config first"),
     "clip_auto" to ("سرور از کلیپ‌بورد اضافه شد" to "server(s) added from the clipboard"),
     "clip_add" to ("افزودن" to "Add"),
     "settings" to ("تنظیمات" to "Settings"),
