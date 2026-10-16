@@ -33,7 +33,7 @@ class ScanDialog(QDialog):
     """Finds Cloudflare IPs that work from your ISP for the selected profile.
     After exec(): self.action is None, ("one", ip) or ("many", [ips])."""
 
-    def __init__(self, profile, n_cf_profiles, parent=None):
+    def __init__(self, profile, n_cf_profiles, parent=None, group=""):
         super().__init__(parent)
         self.setWindowTitle("Clean IP scanner (Cloudflare)")
         self.resize(560, 560)
@@ -65,7 +65,7 @@ class ScanDialog(QDialog):
         self.list = QListWidget(); lay.addWidget(self.list)
         row2 = QHBoxLayout()
         self.one_btn = QPushButton("Use selected IP for this profile"); self.one_btn.clicked.connect(self.use_one)
-        self.many_btn = QPushButton(f"Spread best IPs over {n_cf_profiles} Cloudflare profile(s)")
+        self.many_btn = QPushButton(f"Spread best IPs over {n_cf_profiles} Cloudflare profile(s)" + (f" of group '{group}'" if group else ""))
         self.many_btn.clicked.connect(self.use_many); self.many_btn.setEnabled(n_cf_profiles > 0)
         row2.addWidget(self.one_btn); row2.addWidget(self.many_btn)
         lay.addLayout(row2)

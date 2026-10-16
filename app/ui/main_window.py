@@ -829,8 +829,9 @@ class MainWindow(QMainWindow):
         p = self.selected()
         if not p:
             QMessageBox.information(self, "NetBridge", "Select a profile first."); return
-        cf = [q for q in self.profiles if ipscan.looks_cloudflare(q)]
-        d = ScanDialog(p, len(cf), self)
+        grp = self.group_combo.currentData() or ""      # the group shown in the list (a subscription); "" = all
+        cf = ipscan.cloudflare_in_group(self.profiles, grp)
+        d = ScanDialog(p, len(cf), self, group=grp)
         d.exec()
         if not d.action: return
         kind, val = d.action
@@ -838,12 +839,12 @@ class MainWindow(QMainWindow):
             p["address_override"] = val
             msg = f"Clean IP {val} set for '{p.get('name')}'."
         else:
+            scope = f"group '{grp}'" if grp else "all groups"
             if QMessageBox.question(self, "NetBridge",
-                    f"Set Clean IP on {len(cf)} Cloudflare profile(s), using {len(val)} tested IP(s)?\n"
-                    "Existing Clean IP values of those profiles will be replaced.") != QMessageBox.Yes:
+                    f"Set Clean IP on {len(cf)} Cloudflare profile(s) of {scope}, using {len(val)} tested IP(s)?\n"
+                    "Existing Clean IP values of those profiles will be replaced. Other groups are not touched.") != QMessageBox.Yes:
                 return
-            for n, q in enumerate(cf):
-                q["address_override"] = val[n % len(val)]
+            ipscan.spread_clean_ips(self.profiles, val, grp)
             msg = f"Clean IPs applied to {len(cf)} profile(s): " + ", ".join(val)
         save_profiles(self.profiles); self.select(0)
         self.log.append(msg + (" Reconnect to use it." if self.xray.running else ""))

@@ -184,3 +184,29 @@ def scan_target(profile):
 
 def looks_cloudflare(profile):
     return str(profile.get("security", "")).lower() in ("tls",) and int(profile.get("port") or 0) in CF_PORTS
+
+
+def cloudflare_in_group(profiles, group=""):
+    """Cloudflare-looking TLS profiles of one group (a subscription). group "" = all profiles."""
+    return [q for q in profiles if looks_cloudflare(q) and (not group or q.get("group", "") == group)]
+
+
+def spread_clean_ips(profiles, ips, group=""):
+    """Gives the tested clean IPs to the Cloudflare profiles of `group` in turn (best IP first).
+    Returns the profiles that were changed. Profiles outside the group are never touched."""
+    ips = [i for i in ips if i]
+    if not ips:
+        return []
+    targets = cloudflare_in_group(profiles, group)
+    for n, q in enumerate(targets):
+        q["address_override"] = ips[n % len(ips)]
+    return targets
+
+
+def clear_clean_ips(profiles, group=""):
+    """Removes address_override from every profile of `group` (all when ""). Returns how many had one."""
+    n = 0
+    for q in profiles:
+        if (not group or q.get("group", "") == group) and q.get("address_override"):
+            q.pop("address_override"); n += 1
+    return n
