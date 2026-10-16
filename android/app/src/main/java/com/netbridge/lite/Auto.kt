@@ -350,6 +350,28 @@ object Auto {
         }.joinAll()
     }
 
+    /** Phase 2 racing: a group holds the SAME method on different clean IPs. Groups are tried in order; inside a group
+     *  all IPs run at the same time and the fastest working one wins. */
+    private suspend fun runRace(ctx: Context, items: List<Pair<P, List<List<JSONObject>>>>, all: List<P>, st: State, workers: Int) = coroutineScope {
+        val sem = Semaphore(workers)
+        st.done.set(0); st.total = items.size; st.onProgress(0, items.size)
+        items.map { (p, groups) ->
+            launch(Dispatchers.Default) {
+                sem.withPermit {
+                    for (g in groups) {
+                        if (!isActive || st.count() >= st.want) break
+                        val res = coroutineScope {
+                            g.map { v -> async { v to testOne(ctx, with(p, v), all, true) } }.awaitAll()
+                        }
+                        val best = res.filter { it.second >= 0 }.minByOrNull { it.second }
+                        if (best != null) { st.wins.add(Win(p, best.first, best.second)); break }
+                    }
+                    st.onProgress(st.done.incrementAndGet(), items.size)
+                }
+            }
+        }.joinAll()
+    }
+
     suspend fun run(ctx: Context, profiles: List<P>, onProgress: (Int, Int) -> Unit, log: (String) -> Unit, want: Int = 4, workers: Int = 6): Result {
         // servers that already carry a working method (from the PC or an earlier run) first, then the fastest known
         val tls = profiles.filter { isTls(it) }.sortedBy { p ->
@@ -385,11 +407,14 @@ object Auto {
                     val found = scanIps(sampleIps(300, ipv6Route), port, sni)
                     val ips = found.sortedBy { it.first }.take(3).map { it.second }
                     log("Clean IPs found: " + (if (ips.isEmpty()) "none" else ips.joinToString()))
-                    for (ip in ips) {
-                        if (all.count { isTls(it.p) } >= want || !coroutineContext.isActive) break
+                    if (ips.size > 1) log("racing the best ${ips.size} IPs per method")
+                    if (ips.isNotEmpty() && coroutineContext.isActive) {
                         val st = State(want, true, onProgress, 0)
-                        val items = cf.take(20).map { p -> p to variants(p, doh).filter { !it.optBoolean("ip6") }.map { v -> JSONObject(v.toString()).put("address_override", ip) } }
-                        runPhase(ctx, items, profiles, st, workers, true)
+                        val items = cf.take(20).map { p ->
+                            val lists = ips.map { ip -> variants(p, doh).filter { !it.optBoolean("ip6") }.map { v -> JSONObject(v.toString()).put("address_override", ip) } }
+                            p to (0 until (lists.minOfOrNull { it.size } ?: 0)).map { i -> lists.map { it[i] } }
+                        }
+                        runRace(ctx, items, profiles, st, maxOf(2, workers / 3))
                         all.addAll(st.wins)
                     }
                 }

@@ -189,10 +189,33 @@ def find_variant(executable, profile, port, vs, cancelled=lambda: False, timeout
     return None
 
 
+RACE_BASE = 23000
+RACE_WIDTH = 3                                          # clean IPs tested at the same time for one profile
+
+
+def find_variant_race(executable, profile, port, groups, cancelled=lambda: False, timeout=6, tester=strict_test):
+    """groups: list of lists of variants. A group holds the SAME method on different clean IPs.
+    Groups are tried in order (method order is kept); inside a group all IPs run at the same time and the
+    fastest working one wins. Returns (variant, ms) or None."""
+    slot = (port - BASE_PORT) * RACE_WIDTH
+    for g in groups:
+        if cancelled():
+            return None
+        g = g[:RACE_WIDTH]
+        with ThreadPoolExecutor(max_workers=len(g)) as ex:
+            res = list(ex.map(lambda kv: (kv[1], tester(executable, _with(profile, kv[1]), RACE_BASE + slot + kv[0],
+                                                       timeout=timeout)), enumerate(g)))
+        ok = [(ms, v) for v, ms in res if ms is not None and ms >= 0]
+        if ok:
+            ms, v = min(ok, key=lambda t: t[0])
+            return v, ms
+    return None
+
+
 _LOCK = threading.Lock()
 
 
-def _run_phase(executable, jobs, on_win, cancelled, want, state, workers, tester, key="tls_wins"):
+def _run_phase(executable, jobs, on_win, cancelled, want, state, workers, tester, key="tls_wins", finder=find_variant):
     """jobs: list of (profile, variants). Stops early once `want` winners (state[key]) exist."""
     def stop():
         return cancelled() or state[key] >= want
@@ -201,7 +224,7 @@ def _run_phase(executable, jobs, on_win, cancelled, want, state, workers, tester
         n, (p, vs) = n_item
         if stop():
             return
-        r = find_variant(executable, p, BASE_PORT + n, vs, cancelled=stop, tester=tester)
+        r = finder(executable, p, BASE_PORT + n, vs, cancelled=stop, tester=tester)
         with _LOCK:
             if r:
                 if is_tls(p):
@@ -253,13 +276,17 @@ def auto_run(executable, profiles, on_win, on_status=lambda s: None, on_progress
             scanner.scan(scanner.sample_ips(ranges, 300), port, sni,
                          lambda ip, ms, colo: found.append((ms, ip)), cancelled=cancelled)
             ips = [ip for _, ip in sorted(found)[:3]]
-            on_status(f"Clean IPs found: {', '.join(ips) if ips else 'none'}")
-            for ip in ips:
-                if state["tls_wins"] >= want or cancelled():
-                    break
-                jobs = [(p, variants(p, doh, clean_ip=ip)) for p in cf[:20]]
+            on_status(f"Clean IPs found: {', '.join(ips) if ips else 'none'}" +
+                      (f" - racing the best {min(len(ips), RACE_WIDTH)} per method" if len(ips) > 1 else ""))
+            if ips:
+                # race: for every profile, each method is tried on all the clean IPs at once; the fastest IP wins
+                jobs = []
+                for p in cf[:20]:
+                    lists = [variants(p, doh, clean_ip=ip) for ip in ips[:RACE_WIDTH]]
+                    jobs.append((p, [list(g) for g in zip(*lists)]))
                 state.update(done=0, total=len(jobs))
-                _run_phase(executable, jobs, on_win, cancelled, want, state, workers, tester)
+                _run_phase(executable, jobs, on_win, cancelled, want, state, max(2, workers // RACE_WIDTH), tester,
+                           finder=find_variant_race)
 
     insecure = False
     if state["tls_wins"] == 0 and plain and not cancelled():
