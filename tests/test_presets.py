@@ -223,3 +223,13 @@ def test_auto_update_swallows_every_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(presets, "_LAST", {"t": None})
     assert presets.auto_update(1, user_file=tmp_path / "u.json") is None
     assert not (tmp_path / "u.json").exists()
+
+
+def test_shipped_file_has_whitedns_presets_and_all_pass_check():
+    from app.core import presets
+    raw = json.loads(presets.BUNDLED_FILE.read_text("utf-8"))
+    doc, errs = presets.check_doc(raw)
+    assert errs == []
+    for n in range(1, 6):
+        p = doc["presets"][f"wd{n}"]
+        assert p["auto"] is True and p["finalmask"]["tcp"][0]["settings"]["packets"] == "tlshello"

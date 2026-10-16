@@ -308,7 +308,13 @@ object Auto {
                     }
                 }.awaitAll()
             }
-            if (res.all { it >= 0 }) return res.sum() / res.size
+            if (res.all { it >= 0 }) {
+                // the ~6-packet upload limit: a small GET passes, a 50 KB request body stalls
+                try { withContext(Dispatchers.IO) { Net.uploadVia(port) } }
+                catch (e: CancellationException) { throw e }
+                catch (e: Exception) { why(p, "upload-limited: sites opened but a 50 KB upload failed (" + errText(e) + ")"); return -1 }
+                return res.sum() / res.size
+            }
             why(p, "sites " + SITES.mapIndexed { i, t -> t.first + "=" + res[i] + (siteErr[t.first]?.let { " ($it)" } ?: "") }.joinToString(" ") +
                 " | xray: " + tail())
             return -1

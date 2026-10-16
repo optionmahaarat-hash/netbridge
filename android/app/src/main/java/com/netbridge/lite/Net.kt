@@ -29,6 +29,23 @@ object Net {
         } finally { c.disconnect() }
     }
 
+    const val UPLOAD_URL = "https://speed.cloudflare.com/__up"
+
+    /** POSTs [size] bytes through the local proxy. Returns ms once the server answered (any HTTP status: the body got
+     *  through). Throws on stall/timeout - that is the "upload-limited" channel (~6 upstream packets). */
+    fun uploadVia(proxyPort: Int, url: String = UPLOAD_URL, size: Int = 50_000, timeoutMs: Int = 10000): Int {
+        val c = open(url, proxyPort, timeoutMs)
+        val t = System.currentTimeMillis()
+        try {
+            c.requestMethod = "POST"; c.doOutput = true
+            c.setFixedLengthStreamingMode(size)
+            c.setRequestProperty("Content-Type", "application/octet-stream")
+            c.outputStream.use { it.write(ByteArray(size)) }
+            c.responseCode
+            return (System.currentTimeMillis() - t).toInt()
+        } finally { c.disconnect() }
+    }
+
     fun getText(url: String, proxyPort: Int? = null, timeoutMs: Int = 20000, maxBytes: Int = 10 * 1024 * 1024): String {
         val c = open(url, proxyPort, timeoutMs)
         c.instanceFollowRedirects = true

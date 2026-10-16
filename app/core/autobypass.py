@@ -151,10 +151,23 @@ def label(v):
 
 
 # ------------------------------------------------------------------ strict verification
-def _verify(port, timeout=10):
-    """Real HTTPS requests to YouTube / Instagram / Google through the test tunnel. ms or None."""
-    res = latency.check_sites(f"http://127.0.0.1:{port}", timeout=timeout)
-    return latency.sites_ms(res) if latency.sites_ok(res) else None
+UPLOAD_LIMITED = {"n": 0}                     # profiles that opened the sites but stalled on a 50 KB upload
+_ULOCK = threading.Lock()
+
+
+def _verify(port, timeout=10, upload=None):
+    """Real HTTPS requests to YouTube / Instagram / Google through the test tunnel, then a 50 KB upload
+    (catches the ~6-packet upload limit). ms or None."""
+    proxy = f"http://127.0.0.1:{port}"
+    res = latency.check_sites(proxy, timeout=timeout)
+    if not latency.sites_ok(res):
+        return None
+    ok, _, _ = (upload or latency.check_upload)(proxy, timeout)
+    if not ok:
+        with _ULOCK:
+            UPLOAD_LIMITED["n"] += 1
+        return None
+    return latency.sites_ms(res)
 
 
 def strict_test(executable, profile, port, timeout=6):
@@ -208,6 +221,7 @@ def auto_run(executable, profiles, on_win, on_status=lambda s: None, on_progress
              scanner=ipscan, relaxed_tester=test_one):
     """Tries to find `want` working TLS profiles. on_win(profile, variant, ms) is called for each success.
     Returns {"tls": n, "plain": n, "insecure_fallback": bool}."""
+    UPLOAD_LIMITED["n"] = 0
     tls = [p for p in profiles if is_tls(p)]
     plain = [p for p in profiles if not is_tls(p)]
     # profiles that worked before go first
@@ -256,10 +270,14 @@ def auto_run(executable, profiles, on_win, on_status=lambda s: None, on_progress
                    key="wins")
         insecure = state["wins"] > before
     relaxed = False
+    if UPLOAD_LIMITED["n"]:
+        on_status(f"Upload test: {UPLOAD_LIMITED['n']} attempt(s) opened the sites but stalled on a 50 KB upload "
+                  "(upload-limited channel, e.g. the ~6-packet limit) - rejected")
     if state["wins"] == 0 and tls and not cancelled() and relaxed_tester is not None and relaxed_tester is not tester:
         # Nothing opened YouTube/Instagram. Fall back to the old basic test so the user is not left with nothing,
         # but say so: these profiles may connect without opening those sites.
-        on_status("No profile passed the YouTube/Instagram check - falling back to the basic test (weaker)")
+        on_status("No profile passed the YouTube/Instagram + upload check - falling back to the basic test (weaker; "
+                  "these may connect but stall on uploads)")
         state.update(done=0, total=len(tls))
         _run_phase(executable, [(p, variants(p, doh, ipv6=v6)) for p in tls], on_win, cancelled, 2, state, workers, relaxed_tester)
         relaxed = state["wins"] > 0

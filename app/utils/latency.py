@@ -67,3 +67,34 @@ def sites_ok(results):
 def sites_ms(results):
     ms = [m for _, ok, m, _ in results if ok and m > 0]
     return int(sum(ms) / len(ms)) if ms else 1
+
+
+# ---- upload check: some channels pass small downloads but stall after ~6 upstream packets (PattNG report).
+# A page that needs a request body (login, form, any POST) then hangs. A 16-byte GET never notices.
+UPLOAD_URL = "https://speed.cloudflare.com/__up"
+UPLOAD_BYTES = 50_000
+
+
+def _post(proxy, url, timeout, size=UPLOAD_BYTES):
+    """POST `size` bytes through the proxy. Returns ms once the server has answered (any HTTP status counts:
+    the body got through). Raises on stall/timeout/connection errors."""
+    import urllib.error
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+    req = urllib.request.Request(url, data=b"\0" * size, method="POST",
+                                 headers={"User-Agent": UA, "Content-Type": "application/octet-stream"})
+    t = time.time()
+    try:
+        with opener.open(req, timeout=timeout) as r:
+            r.read(64)
+    except urllib.error.HTTPError:
+        pass
+    return int((time.time() - t) * 1000)
+
+
+def check_upload(proxy, timeout=10, url=None, size=UPLOAD_BYTES, post=_post):
+    """(ok, ms, detail). ok=False means the upload stalled or failed: the profile is 'upload-limited'."""
+    try:
+        ms = post(proxy, url or UPLOAD_URL, timeout, size)
+        return True, ms, f"uploaded {size // 1000} KB"
+    except Exception as e:
+        return False, -1, str(e)[:80] or type(e).__name__
