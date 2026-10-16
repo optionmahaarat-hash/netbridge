@@ -11,7 +11,7 @@ import html
 from app.core.bypass import PRESETS, CIPHER_SUITES, FM_STANDARD, FM_PATTNG
 from app.core import bypass as bypass_mod, presets as presets_mod, worker_exit
 from app.ui import theme
-from app.core import aether as aether_mod
+from app.core import aether as aether_mod, cf_deploy
 from app.storage.profiles import load_profiles, save_profiles
 from app.utils.parser import parse_many
 from app.utils.validator import validate_profile
@@ -154,6 +154,19 @@ class PresetWorker(QThread):
             self.done.emit(presets_mod.update(self.current, proxy=self.proxy))
         except Exception as e:
             self.done.emit(f"{e}")
+
+
+class DeployWorker(QThread):
+    """Creates the personal Worker on the user's Cloudflare account (network calls, so off the UI thread)."""
+    status = Signal(str)
+    done = Signal(object)                      # a profile dict or an error text
+    def __init__(self, token, parent=None):
+        super().__init__(parent); self.token = token
+    def run(self):
+        try:
+            self.done.emit(cf_deploy.deploy(self.token, progress=self.status.emit))
+        except Exception as e:
+            self.done.emit(str(e))
 
 
 class AetherWorker(QThread):
@@ -373,6 +386,8 @@ class MainWindow(QMainWindow):
         b = QPushButton("Select non-TLS (plain) profiles"); b.clicked.connect(self.select_plain); r6.addWidget(b)
         self.warp_btn = QPushButton("WARP (Aether core)"); self.warp_btn.setObjectName("primary")
         self.warp_btn.clicked.connect(self.warp_aether); r6.addWidget(self.warp_btn)
+        self.deploy_btn = QPushButton("Deploy my Worker (Cloudflare)"); self.deploy_btn.setObjectName("primary")
+        self.deploy_btn.clicked.connect(self.deploy_worker); r6.addWidget(self.deploy_btn)
         ll.addLayout(r_auto); ll.addLayout(r3); ll.addLayout(r4); ll.addLayout(r5); ll.addLayout(r6)
         splitter.addWidget(left)
 
@@ -758,6 +773,30 @@ class MainWindow(QMainWindow):
         self.aetherw.status.connect(self.log.append)
         self.aetherw.done.connect(self._warp_ready)
         self.aetherw.start()
+
+    # ---------- one-click personal Worker on the user's own Cloudflare account ----------
+    def deploy_worker(self):
+        if getattr(self, "deployw", None) and self.deployw.isRunning():
+            return
+        token, ok = QInputDialog.getText(self, "Deploy my Worker",
+            "Creates a private relay on YOUR free Cloudflare account.\n\n"
+            "1) dash.cloudflare.com > My Profile > API Tokens > Create Token > 'Edit Cloudflare Workers' template.\n"
+            "2) Paste the token here. It is used once and never saved.\n\nAPI token:", QLineEdit.Password)
+        if not ok or not token.strip():
+            return
+        self.deploy_btn.setEnabled(False)
+        self.deployw = DeployWorker(token, self)
+        self.deployw.status.connect(self.log.append)
+        self.deployw.done.connect(self._deploy_done)
+        self.deployw.start()
+
+    def _deploy_done(self, result):
+        self.deploy_btn.setEnabled(True)
+        if not isinstance(result, dict):
+            QMessageBox.warning(self, "Deploy my Worker", str(result)); return
+        self._add_profiles([result])
+        self.log.append(f"Your Worker is ready: {result['server']} (it may take a minute before it answers).")
+        QMessageBox.information(self, "Deploy my Worker", f"Done. Added profile '{result['name']}'.\nAddress: {result['server']}")
 
     def proxy_url_for_download(self):
         return f"http://127.0.0.1:{self.http_port}" if self.xray.running else None
