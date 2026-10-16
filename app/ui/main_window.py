@@ -11,6 +11,7 @@ import html
 from app.core.bypass import PRESETS, CIPHER_SUITES, FM_STANDARD, FM_PATTNG
 from app.core import bypass as bypass_mod, presets as presets_mod, worker_exit
 from app.ui import theme
+from app.core import aether as aether_mod
 from app.storage.profiles import load_profiles, save_profiles
 from app.utils.parser import parse_many
 from app.utils.validator import validate_profile
@@ -155,6 +156,26 @@ class PresetWorker(QThread):
             self.done.emit(f"{e}")
 
 
+class AetherWorker(QThread):
+    """Installs the Aether core when it is missing, then starts it and waits for its SOCKS5 port.
+    Runs off the UI thread: the first start scans for a gateway and can take a minute."""
+    status = Signal(str)
+    done = Signal(object)                      # the port (int) or an error text
+    def __init__(self, manager, proxy, parent=None):
+        super().__init__(parent); self.mgr, self.proxy, self._stop = manager, proxy, False
+    def stop(self):
+        self._stop = True
+    def run(self):
+        try:
+            if not aether_mod.installed():
+                path, tag = aether_mod.download_core(proxy=self.proxy, progress=self.status.emit)
+                self.status.emit(f"Aether {tag} installed: {path}")
+            port = self.mgr.start(cancelled=lambda: self._stop, progress=self.status.emit)
+            self.done.emit(port)
+        except Exception as e:
+            self.done.emit(str(e))
+
+
 class PinWorker(QThread):
     """Fetches the certificate hash of self-signed (insecure) servers."""
     result = Signal(object, str, str)          # profile, hash or "", error or ""
@@ -294,6 +315,7 @@ class MainWindow(QMainWindow):
         self.settings = load_settings()
         self.view = []; self.worker = None; self.auto_worker = None; self._auto_wins = []; self.pending_best = False; self._done = 0; self._total = 0
         self.xray = XrayManager()
+        self.aether = aether_mod.AetherManager()
         self.socks_port, self.http_port = ports.SOCKS, ports.HTTP
         self.active_config = Path("configs/active.json")
         self.check_config_path = Path("configs/check.json")      # validation writes here, never over the live config
@@ -349,6 +371,8 @@ class MainWindow(QMainWindow):
         self.tls_btn = QPushButton("Convert non-TLS to TLS (try)"); self.tls_btn.clicked.connect(self.convert_tls); r5.addWidget(self.tls_btn)
         r6 = QHBoxLayout()
         b = QPushButton("Select non-TLS (plain) profiles"); b.clicked.connect(self.select_plain); r6.addWidget(b)
+        self.warp_btn = QPushButton("WARP (Aether core)"); self.warp_btn.setObjectName("primary")
+        self.warp_btn.clicked.connect(self.warp_aether); r6.addWidget(self.warp_btn)
         ll.addLayout(r_auto); ll.addLayout(r3); ll.addLayout(r4); ll.addLayout(r5); ll.addLayout(r6)
         splitter.addWidget(left)
 
@@ -715,7 +739,40 @@ class MainWindow(QMainWindow):
             self.test_all(then_connect=True); return
         self.connect_()
 
+    # ---------- WARP through the Aether core ----------
+    def warp_aether(self):
+        if getattr(self, "aetherw", None) and self.aetherw.isRunning():
+            return
+        if not aether_mod.installed():
+            if QMessageBox.question(self, "WARP (Aether)",
+                    "WARP uses the separate open-source program Aether (AGPL-3.0, github.com/CluvexStudio/Aether).\n\n"
+                    "It is not part of NetBridge. It will be downloaded now from its official GitHub releases (about 20 MB), "
+                    "checked with its SHA-256 and kept in cores/aether/. Continue?") != QMessageBox.Yes:
+                return
+        self.warp_btn.setEnabled(False)
+        self.aetherw = AetherWorker(self.aether, self.proxy_url_for_download(), self)
+        self.aetherw.status.connect(self.log.append)
+        self.aetherw.done.connect(self._warp_ready)
+        self.aetherw.start()
+
+    def proxy_url_for_download(self):
+        return f"http://127.0.0.1:{self.http_port}" if self.xray.running else None
+
+    def _warp_ready(self, result):
+        self.warp_btn.setEnabled(True)
+        if not isinstance(result, int):
+            QMessageBox.warning(self, "WARP (Aether)", str(result)); return
+        p = next((q for q in self.profiles if aether_mod.is_aether(q)), None)
+        if p is None:
+            p = aether_mod.warp_profile(result)
+            self.profiles.append(p)
+        p["port"] = result
+        save_profiles(self.profiles); self.refresh(keep=p)
+        self.log.append(f"Aether is ready: SOCKS5 127.0.0.1:{result}. Connecting through it ...")
+        self.connect_(profile=p)
+
     def disconnect_(self):
+        self.aether.stop()
         self.xray.stop(); self.timer.stop(); self._proxy(False)
         self.connect_btn.setText("CONNECT"); self.status.setText("Status: Disconnected")
         self.log.append("Xray stopped.")
@@ -745,6 +802,10 @@ class MainWindow(QMainWindow):
             if (self.socks_port, self.http_port) != (ports.SOCKS, ports.HTTP):
                 who = ports.port_owner(ports.HTTP) or ports.port_owner(ports.SOCKS) or "another program"
                 self.log.append(f"Ports {ports.SOCKS}/{ports.HTTP} are in use by {who}. Using {self.socks_port}/{self.http_port} instead.")
+            if any(aether_mod.is_aether(q) for q in profs) and not self.aether.running:
+                QMessageBox.information(self, "NetBridge", "The WARP profile needs the Aether core running. Press the 'WARP (Aether core)' button."); return
+            if not any(aether_mod.is_aether(q) for q in profs) and self.aether.running:
+                self.aether.stop()
             write_config(profs, self.active_config, self.settings, mode=cmode, pin_profile=self._pin_profile(), all_profiles=self.profiles,
                          socks_port=self.socks_port, http_port=self.http_port)
             self.xray.start(self.active_config)
@@ -1019,4 +1080,7 @@ class MainWindow(QMainWindow):
             if w is not None and w.isRunning():
                 if hasattr(w, "stop"): w.stop()
                 w.wait(wait)
-        self.xray.stop(); self._proxy(False); save_profiles(self.profiles); e.accept()
+        w = getattr(self, "aetherw", None)
+        if w is not None and w.isRunning():
+            w.stop(); w.wait(8000)
+        self.aether.stop(); self.xray.stop(); self._proxy(False); save_profiles(self.profiles); e.accept()

@@ -113,6 +113,9 @@ def build_outbound(p):
                 "method": p["method"], "password": p["password"]
             }]}
         }
+    elif typ == "socks":                      # a local SOCKS5 program, e.g. the Aether core (WARP)
+        outbound = {"protocol": "socks",
+                    "settings": {"servers": [{"address": p.get("server") or "127.0.0.1", "port": int(p["port"])}]}}
     elif typ == "hysteria2":
         tls = {"alpn": ["h3"]}
         if p.get("sni"): tls["serverName"] = p["sni"]

@@ -245,6 +245,7 @@ def auto_run(executable, profiles, on_win, on_status=lambda s: None, on_progress
     """Tries to find `want` working TLS profiles. on_win(profile, variant, ms) is called for each success.
     Returns {"tls": n, "plain": n, "insecure_fallback": bool}."""
     UPLOAD_LIMITED["n"] = 0
+    profiles = [p for p in profiles if p.get("engine") != "aether"]          # the local WARP entry is not a server to search
     tls = [p for p in profiles if is_tls(p)]
     plain = [p for p in profiles if not is_tls(p)]
     # profiles that worked before go first
