@@ -1,5 +1,6 @@
 import json
 from app.storage.atomic import write_text_atomic
+from app.core import worker_exit
 from app.core.bypass import apply_bypass
 from app.core.routing import build_routing, build_dns
 
@@ -23,11 +24,12 @@ def _addr(p):
 def _stream(p):
     network = p.get("network") or "tcp"
     security = p.get("security") or ""
+    path = worker_exit.apply(p.get("path") or "/", p.get("worker_exit"))
     s = {"network": network}
     if security:
         s["security"] = security
     if network == "ws":
-        s["wsSettings"] = {"path": p.get("path") or "/"}
+        s["wsSettings"] = {"path": path}
         if p.get("host"):
             s["wsSettings"]["headers"] = {"Host": p["host"]}
         if p.get("early_data"):
@@ -50,12 +52,12 @@ def _stream(p):
     if network == "grpc":
         s["grpcSettings"] = {"serviceName": p.get("service_name", "")}
     elif network == "httpupgrade":
-        s["httpupgradeSettings"] = {"path": p.get("path") or "/"}
+        s["httpupgradeSettings"] = {"path": path}
         if p.get("host"):
             s["httpupgradeSettings"]["host"] = p["host"]
     elif network in ("xhttp", "splithttp"):
         s["network"] = "xhttp"
-        x = {"path": p.get("path") or "/"}
+        x = {"path": path}
         if p.get("host"):
             x["host"] = p["host"]
         if p.get("xmode"):

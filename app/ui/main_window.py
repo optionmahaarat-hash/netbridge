@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 import json
 import html
 from app.core.bypass import PRESETS, CIPHER_SUITES, FM_STANDARD, FM_PATTNG
-from app.core import bypass as bypass_mod, presets as presets_mod
+from app.core import bypass as bypass_mod, presets as presets_mod, worker_exit
 from app.storage.profiles import load_profiles, save_profiles
 from app.utils.parser import parse_many
 from app.utils.validator import validate_profile
@@ -79,6 +79,8 @@ class BypassDialog(QDialog):
         self.ip.setPlaceholderText("Clean Cloudflare IP (optional) - SNI/Host stay unchanged")
         self.ech = QLineEdit(profile.get("ech", ""))
         self.ech.setPlaceholderText("ECH config list, e.g. cloudflare-ech.com+https://1.1.1.1/dns-query  (empty = off)")
+        self.wexit = QLineEdit(profile.get("worker_exit", ""))
+        self.wexit.setPlaceholderText("Worker exit (optional): proxyip=1.2.3.4:443  or  socks5=user:pass@host:1080  or  http=host:8080")
         self.chain = QComboBox(); self.chain.addItem("(none)", "")
         for q in profiles:
             if _pkey(q) != _pkey(profile):
@@ -87,6 +89,7 @@ class BypassDialog(QDialog):
         form.addRow("Mode:", self.mode)
         form.addRow("Clean IP:", self.ip)
         form.addRow("ECH:", self.ech)
+        form.addRow("Worker exit:", self.wexit)
         form.addRow("Chain via (first hop):", self.chain)
         lay.addLayout(form)
         lay.addWidget(QLabel("finalMask (JSON) - used in Custom mode:"))
@@ -110,8 +113,10 @@ class BypassDialog(QDialog):
         bb.accepted.connect(self.accept); bb.rejected.connect(self.reject); lay.addWidget(bb)
 
     def apply(self, p):
+        wexit = worker_exit.normalize(self.wexit.text())       # raises ValueError BEFORE anything is changed
         p["bypass"] = self.mode.currentData()
         for k, v in [("address_override", self.ip.text().strip()),
+                     ("worker_exit", wexit),
                      ("ech", self.ech.text().strip()),
                      ("chain_key", self.chain.currentData() or ""),
                      ("fm", self.fm.toPlainText().strip()),
@@ -558,7 +563,7 @@ class MainWindow(QMainWindow):
             return
         p2 = profiles[0]
         if d.value()[0]: p2["name"] = d.value()[0]
-        for k in ("group", "bypass", "address_override", "delay", "ech", "chain_key", "early_data", "early_data_header"):
+        for k in ("group", "bypass", "address_override", "delay", "ech", "chain_key", "early_data", "early_data_header", "worker_exit"):
             if k in p and k not in p2: p2[k] = p[k]
         if (p.get("server"), p.get("port")) == (p2.get("server"), p2.get("port")):   # same server: its pinned certificate is still valid
             for k in ("insecure", "pcs"):

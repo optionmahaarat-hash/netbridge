@@ -64,7 +64,7 @@ object ConfigGen {
         val security = p.s("security")
         val s = JSONObject().put("network", network)
         if (security.isNotEmpty()) s.put("security", security)
-        val path = p.s("path").ifEmpty { "/" }
+        val path = WorkerExit.apply(p.s("path").ifEmpty { "/" }, p.s("worker_exit"))
         if (network == "ws") {
             val ws = JSONObject().put("path", path)
             if (p.s("host").isNotEmpty()) ws.put("headers", JSONObject().put("Host", p.s("host")))
