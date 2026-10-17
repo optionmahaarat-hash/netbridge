@@ -818,6 +818,10 @@ class MainWindow(QMainWindow):
     def warp_aether(self, kind="warp"):
         """kind: "warp", "tor" (Tor carried inside WARP) or "tor-only" (plain Tor, bridges when blocked)."""
         if getattr(self, "aetherw", None) and self.aetherw.isRunning():
+            if QMessageBox.question(self, "Aether", "Aether is still starting (Tor / Psiphon can take a few minutes).\n\n"
+                                    "Cancel it?") == QMessageBox.Yes:
+                self.aetherw.stop()
+                self.log.append("Aether: cancelling ...")
             return
         if kind in ("tor", "tor-only") and QMessageBox.question(self, "Tor (Aether)",
                 "Tor is slow and meant for light browsing; the first start downloads Tor's directory and can take several minutes.\n"
@@ -835,8 +839,7 @@ class MainWindow(QMainWindow):
                     "It is not part of NetBridge. It will be downloaded now from its official GitHub releases (about 20 MB), "
                     "checked with its SHA-256 and kept in cores/aether/. Continue?") != QMessageBox.Yes:
                 return
-        for b in (self.warp_btn, self.tor_btn, self.toronly_btn, self.psi_btn, self.psionly_btn):
-            b.setEnabled(False)
+        self.log.append(f"Aether ({kind}): starting - the buttons stay active; press one again to cancel.")
         proto, fam = self.warp_mode.currentData() if kind == "warp" else ("masque", "4")
         self.aetherw = AetherWorker(self.aether, self.proxy_url_for_download(), kind, self, protocol=proto, family=fam,
                                   region=(self.psi_region.currentData() or None) if kind.startswith("psiphon") else None)
@@ -939,6 +942,8 @@ class MainWindow(QMainWindow):
             b.setEnabled(True)
         kind = getattr(self, "_aether_kind", "warp")
         if not isinstance(result, int):
+            if str(result) == "cancelled":
+                self.log.append("Aether: cancelled."); return
             QMessageBox.warning(self, "Aether", str(result)); return
         p = next((q for q in self.profiles if aether_mod.needs_kind(q) == kind), None)
         if p is None:
