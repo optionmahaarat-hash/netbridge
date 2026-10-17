@@ -284,6 +284,7 @@ private fun SettingsSheet(vm: Vm, ui: Ui, toast: (String) -> Unit) {
     val clipboard = LocalClipboardManager.current
     var confirm by remember { mutableStateOf(false) }
     var askFree by remember { mutableStateOf(false) }
+    var askAuto by remember { mutableStateOf(false) }
     var freeBusy by remember { mutableStateOf(false) }
     val freeOk = t("free_ok"); val freeFail = t("free_fail")
     var askToken by remember { mutableStateOf(false) }
@@ -312,6 +313,12 @@ private fun SettingsSheet(vm: Vm, ui: Ui, toast: (String) -> Unit) {
         }
         Divider2()
         Action(t("refresh_subs"), NB.Text) { vm.refreshSubs { toast("$it $upd") } }
+        Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(t("free_auto"), color = NB.Text, fontSize = 14.sp, modifier = Modifier.weight(1f))
+            Switch(checked = ui.freeAuto, onCheckedChange = { if (it) askAuto = true else vm.setFreeAuto(false) }, colors = SwitchDefaults.colors(
+                checkedThumbColor = NB.Bg0, checkedTrackColor = NB.Gold, uncheckedThumbColor = NB.Muted, uncheckedTrackColor = NB.Bg1, uncheckedBorderColor = NB.Stroke))
+        }
+        Divider2()
         Action(if (freeBusy) t("free_busy") else t("free"), NB.Gold) { if (!freeBusy) askFree = true }
         Action(if (busy) t("deploy_busy") else t("deploy"), NB.Gold) { if (!busy) askToken = true }
         Action(t("report"), NB.Text) { clipboard.setText(AnnotatedString(vm.report())); toast(cp) }
@@ -319,6 +326,12 @@ private fun SettingsSheet(vm: Vm, ui: Ui, toast: (String) -> Unit) {
         Spacer(Modifier.height(10.dp))
         Text("NetBridge ${BuildInfo.VERSION}", color = NB.Muted, fontSize = 11.sp, modifier = Modifier.align(Alignment.CenterHorizontally))
     }
+    if (askAuto) AlertDialog(
+        onDismissRequest = { askAuto = false }, containerColor = NB.Card,
+        title = { Text(t("free_auto"), color = NB.Text) },
+        text = { Text(t("free_warn"), color = NB.Muted, fontSize = 13.sp) },
+        confirmButton = { TextButton({ askAuto = false; vm.setFreeAuto(true) }) { Text(t("yes"), color = NB.Gold) } },
+        dismissButton = { TextButton({ askAuto = false }) { Text(t("no"), color = NB.Muted) } })
     if (askFree) AlertDialog(
         onDismissRequest = { askFree = false }, containerColor = NB.Card,
         title = { Text(t("free"), color = NB.Text) },

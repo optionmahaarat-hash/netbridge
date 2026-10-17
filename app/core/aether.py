@@ -171,14 +171,20 @@ def installed(dest_dir=None):
 
 
 # ------------------------------------------------------------------ running it
-MODES = ("warp", "tor", "tor-only")            # warp = WARP only; tor = Tor carried inside the WARP tunnel; tor-only = plain Tor (bridges when blocked)
+MODES = ("warp", "tor", "tor-only", "psiphon", "psiphon-only")      # warp = WARP only; tor / psiphon = carried inside the WARP tunnel; *-only = no WARP
+SIDE_KINDS = ("tor", "psiphon")                                      # these have a second proxy port: that one is NetBridge's
+ONLY_KINDS = ("tor-only", "psiphon-only")                            # these have no tunnel at all: the --bind port is the proxy
+REGION_RE = re.compile(r"^[A-Za-z]{2}$")
 
 
-def build_args(exe, port=DEFAULT_PORT, mode="h3", config=None, protocol="masque", tor=None, tor_port=None, tor_dir=None, family="4"):
+def build_args(exe, port=DEFAULT_PORT, mode="h3", config=None, protocol="masque", tor=None, tor_port=None, tor_dir=None, family="4",
+               psiphon=None, psiphon_port=None, psiphon_dir=None, region=None):
     """Command line. Every choice is given as a flag, because a flag suppresses that question (Aether asks interactively otherwise).
     family: which gateway addresses to scan: "4" (IPv4), "6" (IPv6) or "dual". Some networks only let IPv6 through.
     mode: "h3" = MASQUE over HTTP/3 (default), "h2" = MASQUE over HTTP/2 with ClientHello fragmentation (when UDP/QUIC is blocked).
-    tor: None, "tor" (Tor inside the tunnel; its proxy is tor_port) or "tor-only" (no WARP; the proxy on `port` is Tor)."""
+    tor: None, "tor" (Tor inside the tunnel; its proxy is tor_port) or "tor-only" (no WARP; the proxy on `port` is Tor).
+    psiphon: None, "psiphon" (inside the tunnel; proxy psiphon_port) or "psiphon-only". region: two-letter exit country for Psiphon.
+    (Psiphon itself is a built-in part of Aether's release: its binary is in the pt/ folder next to aether.exe.)"""
     if protocol not in ("masque", "wg", "gool"):
         raise ValueError("protocol must be masque, wg or gool")
     if mode not in ("h3", "h2"):
@@ -187,16 +193,31 @@ def build_args(exe, port=DEFAULT_PORT, mode="h3", config=None, protocol="masque"
         raise ValueError("tor must be None, 'tor' or 'tor-only'")
     if family not in ("4", "6", "dual"):
         raise ValueError("family must be 4, 6 or dual")
+    if psiphon not in (None, "psiphon", "psiphon-only"):
+        raise ValueError("psiphon must be None, 'psiphon' or 'psiphon-only'")
+    if region and not REGION_RE.match(region):
+        raise ValueError("region must be a two-letter country code")
+    if tor and psiphon:
+        raise ValueError("choose Tor or Psiphon, not both")
     if tor == "tor-only":
         args = [str(exe), "--bind", f"127.0.0.1:{int(port)}", "--tor-only"]
+    elif psiphon == "psiphon-only":
+        args = [str(exe), "--bind", f"127.0.0.1:{int(port)}", "--psiphon-only"]
     else:
         args = [str(exe), "--bind", f"127.0.0.1:{int(port)}", {"4": "-4", "6": "-6", "dual": "--dual"}[family], f"--{protocol}", "--turbo", "--noize", "firewall", "--quick-reconnect"]
         if protocol == "masque" and mode == "h2":
             args += ["--h2", "--fragment"]
         if tor == "tor":
             args += ["--tor", "--tor-bind", f"127.0.0.1:{int(tor_port or port + 1)}"]
+        if psiphon == "psiphon":
+            args += ["--psiphon", "--psiphon-bind", f"127.0.0.1:{int(psiphon_port or port + 1)}"]
     if tor and tor_dir:
         args += ["--tor-dir", str(tor_dir)]
+    if psiphon:
+        if psiphon_dir:
+            args += ["--psiphon-dir", str(psiphon_dir)]
+        if region:
+            args += ["--psiphon-region", region.upper()]
     if config:
         args += ["--config", str(config)]
     return args
@@ -227,7 +248,7 @@ class AetherManager:
         self.data_dir = Path(data_dir or DATA_DIR)
         self.process = None
         self.port = None
-        self.kind = None                      # "warp" / "tor" / "tor-only": what is running
+        self.kind = None                      # one of MODES: what is running
         self._lines = []
         self._lock = threading.Lock()
 
@@ -245,17 +266,18 @@ class AetherManager:
                 self._lines.append(line.rstrip())
                 del self._lines[:-200]
 
-    def _launch(self, port, mode, tor=None, tor_port=None, protocol="masque", family="4"):
+    def _launch(self, port, mode, tor=None, tor_port=None, protocol="masque", family="4", psiphon=None, psiphon_port=None, region=None):
         self.data_dir.mkdir(parents=True, exist_ok=True)
         args = build_args(self.executable, port, mode, config=self.data_dir / "aether.toml", tor=tor, tor_port=tor_port,
-                          tor_dir=self.data_dir / "tor", protocol=protocol, family=family)
+                          tor_dir=self.data_dir / "tor", protocol=protocol, family=family,
+                          psiphon=psiphon, psiphon_port=psiphon_port, psiphon_dir=self.data_dir / "psiphon", region=region)
         self.process = subprocess.Popen(args, cwd=str(self.data_dir), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                         stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", creationflags=NOWIN)
         threading.Thread(target=self._pump, args=(self.process,), daemon=True).start()
 
     def start(self, wait=45, cancelled=lambda: False, progress=lambda s: None, ready=socks_ready, sleep=time.sleep,
-              modes=("h3", "h2"), kind="warp", protocol="masque", family="4"):
-        """Starts Aether and waits until the SOCKS5 port NetBridge will use works. kind: "warp", "tor" or "tor-only".
+              modes=("h3", "h2"), kind="warp", protocol="masque", family="4", region=None):
+        """Starts Aether and waits until the SOCKS5 port NetBridge will use works. kind: one of MODES.
         WARP/Tor-in-tunnel try HTTP/3 first, then HTTP/2+fragment. Returns that port. Raises AetherError with the last log lines."""
         if kind not in MODES:
             raise ValueError("kind must be one of " + ", ".join(MODES))
@@ -263,16 +285,19 @@ class AetherManager:
             raise AetherError("Aether is not installed yet")
         self.stop()
         port = free_port()
-        tor_port = free_port(port + 1) if kind == "tor" else None
-        use = port if kind != "tor" else tor_port
+        side_port = free_port(port + 1) if kind in SIDE_KINDS else None
+        use = side_port if kind in SIDE_KINDS else port
         if kind != "warp":
             wait = max(wait, 240)                                   # Tor downloads its directory first; bridges can take longer still
-        for mode in (modes if kind != "tor-only" and (protocol == "masque" or kind == "tor") else ("h3",)):
+        for mode in (modes if kind not in ONLY_KINDS and (protocol == "masque" or kind in SIDE_KINDS) else ("h3",)):
             what = {"warp": (f"MASQUE {'HTTP/3' if mode == 'h3' else 'HTTP/2 + fragment'}" if protocol == "masque"
-                             else {"wg": "WireGuard", "gool": "WARP-in-WARP (gool)"}.get(protocol, protocol)) + f", IPv{family}", "tor": f"Tor inside MASQUE {mode.upper()}",
-                    "tor-only": "Tor alone"}[kind]
+                             else {"wg": "WireGuard", "gool": "WARP-in-WARP (gool)"}.get(protocol, protocol)) + f", IPv{family}",
+                    "tor": f"Tor inside MASQUE {mode.upper()}", "tor-only": "Tor alone",
+                    "psiphon": f"Psiphon inside MASQUE {mode.upper()}", "psiphon-only": "Psiphon alone"}[kind]
             progress(f"Starting Aether ({what}) on port {use} - the first start can take a few minutes ...")
-            self._launch(port, mode, tor=None if kind == "warp" else kind, tor_port=tor_port, protocol=protocol, family=family)
+            self._launch(port, mode, tor=kind if kind.startswith("tor") else None, tor_port=side_port if kind == "tor" else None,
+                         protocol=protocol, family=family, psiphon=kind if kind.startswith("psiphon") else None,
+                         psiphon_port=side_port if kind == "psiphon" else None, region=region)
             end = time.time() + wait
             while time.time() < end:
                 if cancelled():
@@ -283,11 +308,14 @@ class AetherManager:
                     self.port, self.kind = use, kind
                     return use
                 sleep(0.5)
-            progress("Aether did not become ready" + (" - trying the next mode" if mode != modes[-1] and kind != "tor-only" else ""))
+            progress("Aether did not become ready" + (" - trying the next mode" if mode != modes[-1] and kind not in ONLY_KINDS else ""))
             self.stop()
         tail = "\n".join(self.tail())
         if kind != "warp" and re.search(r"unexpected argument|unknown (option|argument)|not (built|compiled)|unrecognized", tail, re.I):
-            raise AetherError("this Aether build has no Tor support (it must be built with the 'tor' feature). Last output:\n" + tail)
+            what = "Psiphon" if kind.startswith("psiphon") else "Tor"
+            raise AetherError(f"this Aether build has no {what} support. Last output:\n" + tail)
+        if kind.startswith("psiphon") and re.search(r"psiphon.{0,40}(not found|no such file|cannot find|missing)", tail, re.I):
+            raise AetherError("the Psiphon program (pt/psiphon-tunnel-core) was not found next to aether.exe. Download the Aether core again. Last output:\n" + tail)
         raise AetherError("Aether did not start. Last output:\n" + tail)
 
     def stop(self):
@@ -322,6 +350,11 @@ def tor_profile(port=DEFAULT_PORT, kind="tor"):
     """A 'socks' profile pointing at Aether's Tor port. aether_kind tells which Aether mode must be running for it."""
     return {"type": "socks", "name": "Tor (Aether)" if kind == "tor" else "Tor alone (Aether)", "server": "127.0.0.1", "port": int(port),
             "group": "Tor", "engine": "aether", "aether_kind": kind, "security": "", "network": "tcp"}
+
+
+def psiphon_profile(port=DEFAULT_PORT, kind="psiphon"):
+    return {"type": "socks", "name": "Psiphon (Aether)" if kind == "psiphon" else "Psiphon alone (Aether)", "server": "127.0.0.1",
+            "port": int(port), "group": "Psiphon", "engine": "aether", "aether_kind": kind, "security": "", "network": "tcp"}
 
 
 def needs_kind(profile):

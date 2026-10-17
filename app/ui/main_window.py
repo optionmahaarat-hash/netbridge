@@ -189,14 +189,18 @@ WARP_CHOICES = [("MASQUE IPv4 (default)", "masque", "4"), ("MASQUE IPv6", "masqu
                 ("WireGuard IPv4", "wg", "4"), ("WireGuard IPv6", "wg", "6"), ("WARP-in-WARP (gool)", "gool", "4")]
 
 
+PSIPHON_REGIONS = [("Auto", ""), ("Germany", "DE"), ("Netherlands", "NL"), ("United States", "US"), ("United Kingdom", "GB"),
+                   ("France", "FR"), ("Canada", "CA"), ("Sweden", "SE"), ("Japan", "JP"), ("Singapore", "SG")]
+
+
 class AetherWorker(QThread):
     """Installs the Aether core when it is missing, then starts it and waits for its SOCKS5 port.
     Runs off the UI thread: the first start scans for a gateway and can take a minute."""
     status = Signal(str)
     done = Signal(object)                      # the port (int) or an error text
-    def __init__(self, manager, proxy, kind="warp", parent=None, protocol="masque", family="4"):
+    def __init__(self, manager, proxy, kind="warp", parent=None, protocol="masque", family="4", region=None):
         super().__init__(parent); self.mgr, self.proxy, self.kind, self._stop = manager, proxy, kind, False
-        self.protocol, self.family = protocol, family
+        self.protocol, self.family, self.region = protocol, family, region
     def stop(self):
         self._stop = True
     def run(self):
@@ -205,7 +209,7 @@ class AetherWorker(QThread):
                 path, tag = aether_mod.download_core(proxy=self.proxy, progress=self.status.emit)
                 self.status.emit(f"Aether {tag} installed: {path}")
             port = self.mgr.start(cancelled=lambda: self._stop, progress=self.status.emit, kind=self.kind,
-                                 protocol=self.protocol, family=self.family)
+                                 protocol=self.protocol, family=self.family, region=self.region)
             self.done.emit(port)
         except Exception as e:
             self.done.emit(str(e))
@@ -432,7 +436,15 @@ class MainWindow(QMainWindow):
         self.free_btn = QPushButton("Get free configs"); self.free_btn.setObjectName("primary"); self.free_btn.clicked.connect(self.get_free_configs)
         r7.addWidget(self.free_btn)
         b = QPushButton("Help / راهنما"); b.clicked.connect(lambda: HelpDialog(self).exec()); r7.addWidget(b)
-        ll.addLayout(r_auto); ll.addLayout(r3); ll.addLayout(r4); ll.addLayout(r5); ll.addLayout(r6); ll.addLayout(r7)
+        r8 = QHBoxLayout()
+        self.psi_btn = QPushButton("Psiphon via WARP"); self.psi_btn.clicked.connect(lambda: self.warp_aether("psiphon")); r8.addWidget(self.psi_btn)
+        self.psionly_btn = QPushButton("Psiphon alone"); self.psionly_btn.clicked.connect(lambda: self.warp_aether("psiphon-only")); r8.addWidget(self.psionly_btn)
+        self.psi_region = QComboBox()
+        for label, cc in PSIPHON_REGIONS:
+            self.psi_region.addItem(label, cc)
+        self.psi_region.setToolTip("Exit country for Psiphon (Auto = Psiphon decides).")
+        r8.addWidget(self.psi_region)
+        ll.addLayout(r_auto); ll.addLayout(r3); ll.addLayout(r4); ll.addLayout(r5); ll.addLayout(r6); ll.addLayout(r7); ll.addLayout(r8)
         splitter.addWidget(left)
 
         right = QWidget(); rl = QVBoxLayout(right)
@@ -807,10 +819,14 @@ class MainWindow(QMainWindow):
         """kind: "warp", "tor" (Tor carried inside WARP) or "tor-only" (plain Tor, bridges when blocked)."""
         if getattr(self, "aetherw", None) and self.aetherw.isRunning():
             return
-        if kind != "warp" and QMessageBox.question(self, "Tor (Aether)",
+        if kind in ("tor", "tor-only") and QMessageBox.question(self, "Tor (Aether)",
                 "Tor is slow and meant for light browsing; the first start downloads Tor's directory and can take several minutes.\n"
                 + ("It runs inside the WARP tunnel, so a network that blocks Tor does not see it." if kind == "tor"
                    else "No WARP: if Tor is blocked, Aether fetches bridges by itself.") + "\n\nStart?") != QMessageBox.Yes:
+            return
+        if kind in ("psiphon", "psiphon-only") and QMessageBox.question(self, "Psiphon (Aether)",
+                "Psiphon is built into the Aether download (no separate install). The first start can take up to a few minutes.\n"
+                + ("It runs inside the WARP tunnel." if kind == "psiphon" else "No WARP: Psiphon connects on its own.") + "\n\nStart?") != QMessageBox.Yes:
             return
         self._aether_kind = kind
         if not aether_mod.installed():
@@ -819,9 +835,11 @@ class MainWindow(QMainWindow):
                     "It is not part of NetBridge. It will be downloaded now from its official GitHub releases (about 20 MB), "
                     "checked with its SHA-256 and kept in cores/aether/. Continue?") != QMessageBox.Yes:
                 return
-        self.warp_btn.setEnabled(False); self.tor_btn.setEnabled(False); self.toronly_btn.setEnabled(False)
+        for b in (self.warp_btn, self.tor_btn, self.toronly_btn, self.psi_btn, self.psionly_btn):
+            b.setEnabled(False)
         proto, fam = self.warp_mode.currentData() if kind == "warp" else ("masque", "4")
-        self.aetherw = AetherWorker(self.aether, self.proxy_url_for_download(), kind, self, protocol=proto, family=fam)
+        self.aetherw = AetherWorker(self.aether, self.proxy_url_for_download(), kind, self, protocol=proto, family=fam,
+                                  region=(self.psi_region.currentData() or None) if kind.startswith("psiphon") else None)
         self.aetherw.status.connect(self.log.append)
         self.aetherw.done.connect(self._warp_ready)
         self.aetherw.start()
@@ -917,14 +935,15 @@ class MainWindow(QMainWindow):
         return f"http://127.0.0.1:{self.http_port}" if self.xray.running else None
 
     def _warp_ready(self, result):
-        for b in (self.warp_btn, self.tor_btn, self.toronly_btn):
+        for b in (self.warp_btn, self.tor_btn, self.toronly_btn, self.psi_btn, self.psionly_btn):
             b.setEnabled(True)
         kind = getattr(self, "_aether_kind", "warp")
         if not isinstance(result, int):
             QMessageBox.warning(self, "Aether", str(result)); return
         p = next((q for q in self.profiles if aether_mod.needs_kind(q) == kind), None)
         if p is None:
-            p = aether_mod.warp_profile(result) if kind == "warp" else aether_mod.tor_profile(result, kind)
+            p = (aether_mod.warp_profile(result) if kind == "warp" else aether_mod.psiphon_profile(result, kind) if kind.startswith("psiphon")
+                 else aether_mod.tor_profile(result, kind))
             self.profiles.append(p)
         p["port"] = result
         save_profiles(self.profiles); self.refresh(keep=p)
@@ -965,7 +984,8 @@ class MainWindow(QMainWindow):
                 self.log.append(f"Ports {ports.SOCKS}/{ports.HTTP} are in use by {who}. Using {self.socks_port}/{self.http_port} instead.")
             need = {aether_mod.needs_kind(q) for q in profs if aether_mod.is_aether(q)}
             if need and not (self.aether.running and self.aether.kind in need):
-                names = {"warp": "WARP (Aether core)", "tor": "Tor via WARP", "tor-only": "Tor alone (bridges)"}
+                names = {"warp": "WARP (Aether core)", "tor": "Tor via WARP", "tor-only": "Tor alone (bridges)",
+                         "psiphon": "Psiphon via WARP", "psiphon-only": "Psiphon alone"}
                 QMessageBox.information(self, "NetBridge", "This profile needs the Aether core in the matching mode. Press the '%s' button." % names[sorted(need)[0]]); return
             if not need and self.aether.running:
                 self.aether.stop()

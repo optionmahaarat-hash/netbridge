@@ -71,6 +71,7 @@ private val S: Map<String, Pair<String, String>> = mapOf(
     "report" to ("کپی گزارش (برای پشتیبانی)" to "Copy report (for support)"),
     "copied" to ("کپی شد" to "Copied"),
     "free" to ("دریافت کانفیگ رایگان (عمومی)" to "Get free configs (public)"),
+    "free_auto" to ("به‌روزرسانی روزانه کانفیگ رایگان (هنگام باز شدن)" to "Refresh free configs daily (when the app opens)"),
     "free_busy" to ("در حال دریافت..." to "Downloading..."),
     "free_ok" to ("سرور تازه اضافه شد. حالا روی «خودکار» وصل شوید تا بهترین پیدا شود." to "new server(s) added. Now connect on Auto to find the best one."),
     "free_fail" to ("دریافت ناموفق بود:" to "Could not download:"),

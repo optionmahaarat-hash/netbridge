@@ -26,5 +26,8 @@ object Sources {
         throw SourceError(last)
     }
 
+    /** True when the list was never fetched, or the last fetch is at least [hours] old (a clock set backwards also counts as due). */
+    fun due(lastMs: Long, nowMs: Long, hours: Int = 24): Boolean = lastMs <= 0L || nowMs < lastMs || nowMs - lastMs >= hours * 3_600_000L
+
     fun dropGroup(profiles: List<P>, group: String): List<P> = profiles.filter { it.s("group") != group }
 }

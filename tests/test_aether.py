@@ -275,3 +275,56 @@ def test_manager_wireguard_tries_one_mode_and_passes_choices(tmp_path, monkeypat
     with pytest.raises(aether.AetherError):
         m.start(ready=lambda p: False, sleep=lambda s: None, protocol="wg", family="6")
     assert len(seen) == 1 and seen[0][1]["protocol"] == "wg" and seen[0][1]["family"] == "6"        # no HTTP/2 retry for WireGuard
+
+
+# ---------------------------------------------------------------- Psiphon modes
+def test_build_args_psiphon_modes_and_region():
+    p = aether.build_args("a.exe", 1900, "h3", psiphon="psiphon", psiphon_port=1905, psiphon_dir="pd", region="de")
+    assert "--psiphon" in p and p[p.index("--psiphon-bind") + 1] == "127.0.0.1:1905" and "--masque" in p
+    assert p[p.index("--psiphon-region") + 1] == "DE" and "--psiphon-dir" in p
+    o = aether.build_args("a.exe", 1900, psiphon="psiphon-only")
+    assert o[:4] == ["a.exe", "--bind", "127.0.0.1:1900", "--psiphon-only"] and "--masque" not in o
+    for bad in (dict(psiphon="x"), dict(psiphon="psiphon", region="DEU"), dict(psiphon="psiphon", region="1;"), dict(tor="tor", psiphon="psiphon")):
+        with pytest.raises(ValueError):
+            aether.build_args("a.exe", 1, **bad)
+
+
+def test_psiphon_profile_kind_matching():
+    p = aether.psiphon_profile(1901, "psiphon-only")
+    assert aether.is_aether(p) and aether.needs_kind(p) == "psiphon-only" and p["group"] == "Psiphon" and p["name"] == "Psiphon alone (Aether)"
+    assert aether.psiphon_profile(1, "psiphon")["name"] == "Psiphon (Aether)"
+
+
+def test_manager_psiphon_waits_on_second_port_and_reports_missing_binary(tmp_path, monkeypatch):
+    (tmp_path / "a.exe").write_bytes(b"x")
+    m = aether.AetherManager(executable=tmp_path / "a.exe", data_dir=tmp_path / "d")
+    seen = []
+
+    class P:
+        stdout = None
+        def poll(self): return None
+        def terminate(self): pass
+        def wait(self, timeout=None): pass
+    monkeypatch.setattr(m, "_launch", lambda port, mode, **kw: (seen.append(kw), setattr(m, "process", P())))
+    ports = iter([1900, 1901])
+    monkeypatch.setattr(aether, "free_port", lambda *a, **k: next(ports))
+    assert m.start(ready=lambda p: p == 1901, sleep=lambda s: None, kind="psiphon", region="NL") == 1901
+    assert m.kind == "psiphon" and seen[0]["psiphon"] == "psiphon" and seen[0]["psiphon_port"] == 1901 and seen[0]["region"] == "NL" and seen[0]["tor"] is None
+    m.stop()
+
+    class Dead:
+        stdout = None
+        def poll(self): return 1
+        def terminate(self): pass
+    monkeypatch.setattr(m, "_launch", lambda port, mode, **kw: (m._lines.append("error: psiphon-tunnel-core not found"), setattr(m, "process", Dead())))
+    monkeypatch.setattr(aether, "free_port", lambda *a, **k: 1900)
+    with pytest.raises(aether.AetherError, match="pt/psiphon-tunnel-core"):
+        m.start(ready=lambda p: False, sleep=lambda s: None, kind="psiphon-only")
+
+
+def test_psiphon_tool_ends_up_next_to_the_exe(tmp_path):
+    import zipfile as zf, io as _io
+    b = _io.BytesIO()
+    with zf.ZipFile(b, "w") as z:
+        z.writestr("aether.exe", b"MZ"); z.writestr("pt/psiphon-tunnel-core.exe", b"PSI"); z.writestr("pt/obfs4proxy.exe", b"O")
+    assert aether.extract_pt(b.getvalue(), tmp_path) == 2 and (tmp_path / "pt" / "psiphon-tunnel-core.exe").read_bytes() == b"PSI"
