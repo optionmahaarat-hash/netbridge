@@ -5,7 +5,7 @@ from app.ui import help_text
 def test_help_has_every_feature_and_google_steps():
     keys = [t[0] for t in help_text.TOPICS]
     assert len(keys) == len(set(keys))
-    for k in ("start", "worker", "gscript", "warp", "bypass", "routing", "exit"):
+    for k in ("start", "worker", "gscript", "warp", "tor", "bypass", "routing", "exit"):
         assert k in keys
     html = help_text.topic("gscript")[2]
     for must in ("Code.gs", "/exec", "Anyone", "Install certificate", "Start", "wrong secret key"):

@@ -176,8 +176,8 @@ class AetherWorker(QThread):
     Runs off the UI thread: the first start scans for a gateway and can take a minute."""
     status = Signal(str)
     done = Signal(object)                      # the port (int) or an error text
-    def __init__(self, manager, proxy, parent=None):
-        super().__init__(parent); self.mgr, self.proxy, self._stop = manager, proxy, False
+    def __init__(self, manager, proxy, kind="warp", parent=None):
+        super().__init__(parent); self.mgr, self.proxy, self.kind, self._stop = manager, proxy, kind, False
     def stop(self):
         self._stop = True
     def run(self):
@@ -185,7 +185,7 @@ class AetherWorker(QThread):
             if not aether_mod.installed():
                 path, tag = aether_mod.download_core(proxy=self.proxy, progress=self.status.emit)
                 self.status.emit(f"Aether {tag} installed: {path}")
-            port = self.mgr.start(cancelled=lambda: self._stop, progress=self.status.emit)
+            port = self.mgr.start(cancelled=lambda: self._stop, progress=self.status.emit, kind=self.kind)
             self.done.emit(port)
         except Exception as e:
             self.done.emit(str(e))
@@ -390,12 +390,14 @@ class MainWindow(QMainWindow):
         r6 = QHBoxLayout()
         b = QPushButton("Select non-TLS (plain) profiles"); b.clicked.connect(self.select_plain); r6.addWidget(b)
         self.warp_btn = QPushButton("WARP (Aether core)"); self.warp_btn.setObjectName("primary")
-        self.warp_btn.clicked.connect(self.warp_aether); r6.addWidget(self.warp_btn)
+        self.warp_btn.clicked.connect(lambda: self.warp_aether("warp")); r6.addWidget(self.warp_btn)
         self.deploy_btn = QPushButton("Deploy my Worker (Cloudflare)"); self.deploy_btn.setObjectName("primary")
         self.deploy_btn.clicked.connect(self.deploy_worker); r6.addWidget(self.deploy_btn)
         r7 = QHBoxLayout()
         self.gs_btn = QPushButton("Google Script"); self.gs_btn.setObjectName("primary"); self.gs_btn.clicked.connect(self.google_script)
         r7.addWidget(self.gs_btn)
+        self.tor_btn = QPushButton("Tor via WARP"); self.tor_btn.clicked.connect(lambda: self.warp_aether("tor")); r7.addWidget(self.tor_btn)
+        self.toronly_btn = QPushButton("Tor alone (bridges)"); self.toronly_btn.clicked.connect(lambda: self.warp_aether("tor-only")); r7.addWidget(self.toronly_btn)
         b = QPushButton("Help / راهنما"); b.clicked.connect(lambda: HelpDialog(self).exec()); r7.addWidget(b)
         ll.addLayout(r_auto); ll.addLayout(r3); ll.addLayout(r4); ll.addLayout(r5); ll.addLayout(r6); ll.addLayout(r7)
         splitter.addWidget(left)
@@ -768,17 +770,24 @@ class MainWindow(QMainWindow):
         self.connect_btn.setStyleSheet(theme.big_button(theme.GRAD_GREEN if connected else theme.GRAD_BLUE, radius=12, size=16))
 
     # ---------- WARP through the Aether core ----------
-    def warp_aether(self):
+    def warp_aether(self, kind="warp"):
+        """kind: "warp", "tor" (Tor carried inside WARP) or "tor-only" (plain Tor, bridges when blocked)."""
         if getattr(self, "aetherw", None) and self.aetherw.isRunning():
             return
+        if kind != "warp" and QMessageBox.question(self, "Tor (Aether)",
+                "Tor is slow and meant for light browsing; the first start downloads Tor's directory and can take several minutes.\n"
+                + ("It runs inside the WARP tunnel, so a network that blocks Tor does not see it." if kind == "tor"
+                   else "No WARP: if Tor is blocked, Aether fetches bridges by itself.") + "\n\nStart?") != QMessageBox.Yes:
+            return
+        self._aether_kind = kind
         if not aether_mod.installed():
-            if QMessageBox.question(self, "WARP (Aether)",
+            if QMessageBox.question(self, "Aether core",
                     "WARP uses the separate open-source program Aether (AGPL-3.0, github.com/CluvexStudio/Aether).\n\n"
                     "It is not part of NetBridge. It will be downloaded now from its official GitHub releases (about 20 MB), "
                     "checked with its SHA-256 and kept in cores/aether/. Continue?") != QMessageBox.Yes:
                 return
-        self.warp_btn.setEnabled(False)
-        self.aetherw = AetherWorker(self.aether, self.proxy_url_for_download(), self)
+        self.warp_btn.setEnabled(False); self.tor_btn.setEnabled(False); self.toronly_btn.setEnabled(False)
+        self.aetherw = AetherWorker(self.aether, self.proxy_url_for_download(), kind, self)
         self.aetherw.status.connect(self.log.append)
         self.aetherw.done.connect(self._warp_ready)
         self.aetherw.start()
@@ -827,16 +836,18 @@ class MainWindow(QMainWindow):
         return f"http://127.0.0.1:{self.http_port}" if self.xray.running else None
 
     def _warp_ready(self, result):
-        self.warp_btn.setEnabled(True)
+        for b in (self.warp_btn, self.tor_btn, self.toronly_btn):
+            b.setEnabled(True)
+        kind = getattr(self, "_aether_kind", "warp")
         if not isinstance(result, int):
-            QMessageBox.warning(self, "WARP (Aether)", str(result)); return
-        p = next((q for q in self.profiles if aether_mod.is_aether(q)), None)
+            QMessageBox.warning(self, "Aether", str(result)); return
+        p = next((q for q in self.profiles if aether_mod.needs_kind(q) == kind), None)
         if p is None:
-            p = aether_mod.warp_profile(result)
+            p = aether_mod.warp_profile(result) if kind == "warp" else aether_mod.tor_profile(result, kind)
             self.profiles.append(p)
         p["port"] = result
         save_profiles(self.profiles); self.refresh(keep=p)
-        self.log.append(f"Aether is ready: SOCKS5 127.0.0.1:{result}. Connecting through it ...")
+        self.log.append(f"Aether ({kind}) is ready: SOCKS5 127.0.0.1:{result}. Connecting through it ...")
         self.connect_(profile=p)
 
     def disconnect_(self):
@@ -871,9 +882,11 @@ class MainWindow(QMainWindow):
             if (self.socks_port, self.http_port) != (ports.SOCKS, ports.HTTP):
                 who = ports.port_owner(ports.HTTP) or ports.port_owner(ports.SOCKS) or "another program"
                 self.log.append(f"Ports {ports.SOCKS}/{ports.HTTP} are in use by {who}. Using {self.socks_port}/{self.http_port} instead.")
-            if any(aether_mod.is_aether(q) for q in profs) and not self.aether.running:
-                QMessageBox.information(self, "NetBridge", "The WARP profile needs the Aether core running. Press the 'WARP (Aether core)' button."); return
-            if not any(aether_mod.is_aether(q) for q in profs) and self.aether.running:
+            need = {aether_mod.needs_kind(q) for q in profs if aether_mod.is_aether(q)}
+            if need and not (self.aether.running and self.aether.kind in need):
+                names = {"warp": "WARP (Aether core)", "tor": "Tor via WARP", "tor-only": "Tor alone (bridges)"}
+                QMessageBox.information(self, "NetBridge", "This profile needs the Aether core in the matching mode. Press the '%s' button." % names[sorted(need)[0]]); return
+            if not need and self.aether.running:
                 self.aether.stop()
             if any(gscript_mod.is_gscript(q) for q in profs) and not (self.gscript and self.gscript.running):
                 QMessageBox.information(self, "NetBridge", "The Google Script profile needs the relay running. Open 'Google Script' and press 'Test and Start'."); return

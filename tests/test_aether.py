@@ -150,7 +150,7 @@ def test_manager_start_missing_exe_and_h3_to_h2_fallback(tmp_path, monkeypatch):
         def terminate(self): pass
         def wait(self, timeout=None): pass
 
-    monkeypatch.setattr(m, "_launch", lambda port, mode: (launched.append(mode), setattr(m, "process", P())))
+    monkeypatch.setattr(m, "_launch", lambda port, mode, **kw: (launched.append((mode, kw)[0]), setattr(m, "process", P())))
     monkeypatch.setattr(aether, "free_port", lambda *a, **k: 1900)
     ready = lambda port: launched[-1] == "h2"                      # only the HTTP/2 mode comes up
     t = [0.0]
@@ -167,7 +167,7 @@ def test_manager_error_carries_log_tail(tmp_path, monkeypatch):
         stdout = None
         def poll(self): return 1
         def terminate(self): pass
-    monkeypatch.setattr(m, "_launch", lambda port, mode: (m._lines.append("boom: no gateway"), setattr(m, "process", Dead())))
+    monkeypatch.setattr(m, "_launch", lambda port, mode, **kw: (m._lines.append("boom: no gateway"), setattr(m, "process", Dead())))
     monkeypatch.setattr(aether, "free_port", lambda *a, **k: 1900)
     with pytest.raises(aether.AetherError, match="boom: no gateway"):
         m.start(wait=1, ready=lambda p: False, sleep=lambda s: None)
@@ -191,3 +191,59 @@ def test_auto_search_ignores_the_local_warp_profile():
     autobypass.auto_run("x", [aether.warp_profile(1900)], lambda *a: None, tester=tester, doh_check=lambda: [], scanner=NoScan(),
                         relaxed_tester=None)
     assert seen == []
+
+
+# ---------------------------------------------------------------- Tor modes
+def test_build_args_tor_modes():
+    t = aether.build_args("a.exe", 1900, "h3", tor="tor", tor_port=1905, tor_dir="td")
+    assert "--tor" in t and t[t.index("--tor-bind") + 1] == "127.0.0.1:1905" and "--masque" in t and "--tor-dir" in t
+    o = aether.build_args("a.exe", 1900, tor="tor-only")
+    assert o[:4] == ["a.exe", "--bind", "127.0.0.1:1900", "--tor-only"] and "--masque" not in o
+    with pytest.raises(ValueError):
+        aether.build_args("a.exe", 1, tor="reverse")
+
+
+def test_extract_pt_writes_only_the_pt_folder(tmp_path):
+    import zipfile as zf, io as _io
+    b = _io.BytesIO()
+    with zf.ZipFile(b, "w") as z:
+        z.writestr("aether-win/aether.exe", b"MZ"); z.writestr("aether-win/pt/obfs4.exe", b"O"); z.writestr("aether-win/pt/sub/snow.exe", b"S")
+        z.writestr("aether-win/pt/../../evil.exe", b"E"); z.writestr("aether-win/README", b"r")
+    assert aether.extract_pt(b.getvalue(), tmp_path) == 2
+    assert (tmp_path / "pt" / "obfs4.exe").read_bytes() == b"O" and (tmp_path / "pt" / "sub" / "snow.exe").exists()
+    assert not (tmp_path.parent / "evil.exe").exists() and not (tmp_path / "aether.exe").exists()
+
+
+def test_tor_profile_and_kind_matching():
+    p = aether.tor_profile(1901, "tor-only")
+    assert aether.is_aether(p) and aether.needs_kind(p) == "tor-only" and p["group"] == "Tor" and p["port"] == 1901
+    assert aether.needs_kind(aether.warp_profile(1900)) == "warp" and aether.needs_kind({"type": "vless"}) is None
+
+
+def test_manager_tor_waits_on_the_tor_port_and_reports_missing_tor_support(tmp_path, monkeypatch):
+    (tmp_path / "a.exe").write_bytes(b"x")
+    m = aether.AetherManager(executable=tmp_path / "a.exe", data_dir=tmp_path / "d")
+    seen = []
+
+    class P:
+        stdout = None
+        def poll(self): return None
+        def terminate(self): pass
+        def wait(self, timeout=None): pass
+    monkeypatch.setattr(m, "_launch", lambda port, mode, **kw: (seen.append((port, kw)), setattr(m, "process", P())))
+    ports = iter([1900, 1901])
+    monkeypatch.setattr(aether, "free_port", lambda *a, **k: next(ports))
+    assert m.start(ready=lambda p: p == 1901, sleep=lambda s: None, kind="tor") == 1901       # Tor-in-tunnel: the SECOND port is the Tor one
+    assert m.kind == "tor" and seen[0][1]["tor"] == "tor" and seen[0][1]["tor_port"] == 1901
+    m.stop(); assert m.kind is None
+
+    class Dead:
+        stdout = None
+        def poll(self): return 2
+        def terminate(self): pass
+    monkeypatch.setattr(m, "_launch", lambda port, mode, **kw: (m._lines.append("error: unexpected argument '--tor-only'"), setattr(m, "process", Dead())))
+    monkeypatch.setattr(aether, "free_port", lambda *a, **k: 1900)
+    with pytest.raises(aether.AetherError, match="no Tor support"):
+        m.start(ready=lambda p: False, sleep=lambda s: None, kind="tor-only")
+    with pytest.raises(ValueError):
+        m.start(kind="nope")
