@@ -43,3 +43,11 @@ def fetch_source(source, fetch, proxy=None):
 def drop_group(profiles, group):
     """The profile list without the old servers of `group` (they are replaced by the fresh list)."""
     return [p for p in profiles if p.get("group") != group]
+
+
+def due(last, now, hours=24):
+    """True when the list was never fetched, or the last fetch is at least `hours` old (a clock set backwards also counts as due)."""
+    try:
+        return not last or now < last or now - last >= hours * 3600
+    except TypeError:
+        return True

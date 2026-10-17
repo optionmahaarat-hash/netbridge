@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
 )
 import json
 import html
+import time
 from app.core.bypass import PRESETS, CIPHER_SUITES, FM_STANDARD, FM_PATTNG
 from app.core import bypass as bypass_mod, presets as presets_mod, worker_exit
 from app.ui import theme
@@ -343,12 +344,18 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"NetBridge v{VERSION}")
         self.setWindowIcon(app_icon())
+        tm = self.menuBar().addMenu("&Tools")
+        self.free_auto_act = tm.addAction("Refresh free configs once a day (on start)")
+        self.free_auto_act.setCheckable(True)
         hm = self.menuBar().addMenu("&Help")
         hm.addAction("&Guide / راهنما", lambda: HelpDialog(self).exec())
         hm.addAction("&About NetBridge", lambda: AboutDialog(self).exec())
         self.resize(1150, 700)
         self.profiles = load_profiles()
         self.settings = load_settings()
+        self.free_auto_act.setChecked(bool(self.settings.get("free_auto")))
+        self.free_auto_act.toggled.connect(self._set_free_auto)
+        QTimer.singleShot(4000, self._free_auto_check)
         self.view = []; self.worker = None; self.auto_worker = None; self._auto_wins = []; self.pending_best = False; self._done = 0; self._total = 0
         self.xray = XrayManager()
         self.aether = aether_mod.AetherManager()
@@ -844,14 +851,27 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Deploy my Worker", f"Done. Added profile '{result['name']}'.\nAddress: {result['server']}")
 
     # ---------- public config lists ----------
-    def get_free_configs(self):
+    def _set_free_auto(self, on):
+        self.settings["free_auto"] = bool(on); save_settings(self.settings)
+        if on:
+            QMessageBox.information(self, "Free configs", "On start, NetBridge will download the public list (at most once a day) and replace its old servers. "
+                "These servers belong to other people - do not use them for banking or private accounts.")
+            self._free_auto_check()
+
+    def _free_auto_check(self):
+        if not self.settings.get("free_auto") or not sources_mod.due(self.settings.get("free_last"), time.time()):
+            return
+        self.get_free_configs(silent=True)
+
+    def get_free_configs(self, silent=False):
         if getattr(self, "srcw", None) and self.srcw.isRunning():
             return
+        self._free_silent = silent
         srcs = sources_mod.load_sources()
         if not srcs:
             QMessageBox.warning(self, "Free configs", "No config source is listed in assets/config_sources.json."); return
         src = srcs[0]
-        if QMessageBox.question(self, "Free configs",
+        if not silent and QMessageBox.question(self, "Free configs",
                 f"Downloads the public list '{src['name']}' ({src['page']}) and replaces its previous servers.\n\n"
                 "Careful: these servers belong to other people. Your traffic passes through them, so do not use them for banking or "
                 "private accounts - use your own Worker (Deploy my Worker) for that.\n\nAfter it finishes, press AUTO to find the best one. Continue?") != QMessageBox.Yes:
@@ -864,7 +884,12 @@ class MainWindow(QMainWindow):
     def _free_done(self, result):
         self.free_btn.setEnabled(True)
         if not isinstance(result, tuple):
-            QMessageBox.warning(self, "Free configs", f"Could not download the list:\n{result}"); return
+            if getattr(self, "_free_silent", False):
+                self.log.append(f"Free configs: could not refresh the list ({result})")
+            else:
+                QMessageBox.warning(self, "Free configs", f"Could not download the list:\n{result}")
+            return
+        self.settings["free_last"] = time.time(); save_settings(self.settings)
         src, profiles, mirror, errors = result
         self.profiles[:] = sources_mod.drop_group(self.profiles, src["group"])
         profiles = self._filter_tls(profiles)

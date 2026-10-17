@@ -39,3 +39,21 @@ def test_all_mirrors_failing_gives_the_last_reason_and_cap_applies():
 def test_drop_group_only_removes_that_group():
     ps = [{"group": "Free: patterniha", "n": 1}, {"group": "My Worker", "n": 2}, {"n": 3}]
     assert [p["n"] for p in S.drop_group(ps, "Free: patterniha")] == [2, 3]
+
+
+def test_due_logic():
+    now = 1_000_000.0
+    assert S.due(0, now) and S.due(None, now)
+    assert not S.due(now - 3600, now) and S.due(now - 24 * 3600, now) and S.due(now + 500, now)   # clock moved back = due
+    assert S.due("junk", now)
+
+
+def test_settings_keep_the_free_list_flags(tmp_path, monkeypatch):
+    from app.storage import settings as st
+    monkeypatch.setattr(st, "DATA", tmp_path / "settings.json")
+    s = st.load_settings()
+    assert s["free_auto"] is False and s["free_last"] == 0
+    s["free_auto"] = True; s["free_last"] = 123.5
+    st.save_settings(s)
+    s2 = st.load_settings()
+    assert s2["free_auto"] is True and s2["free_last"] == 123.5
