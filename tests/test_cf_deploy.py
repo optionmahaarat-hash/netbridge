@@ -47,3 +47,9 @@ def test_no_account():
 def test_worker_source_has_no_leftover():
     s = cd.worker_source("11111111-2222-3333-4444-555555555555")
     assert "__UUID__" not in s and "cloudflare:sockets" in s
+
+
+def test_android_copy_of_the_worker_is_identical():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    assert (root / "android/app/src/main/assets/vless_worker.js").read_text(encoding="utf-8") == (root / "assets/worker/vless_worker.js").read_text(encoding="utf-8")

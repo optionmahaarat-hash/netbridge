@@ -283,7 +283,12 @@ private fun ServerRow(name: String, sub: String, ping: Int?, selected: Boolean, 
 private fun SettingsSheet(vm: Vm, ui: Ui, toast: (String) -> Unit) {
     val clipboard = LocalClipboardManager.current
     var confirm by remember { mutableStateOf(false) }
+    var askToken by remember { mutableStateOf(false) }
+    var token by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var result by remember { mutableStateOf("") }
     val upd = t("updated"); val cp = t("copied")
+    val okTxt = t("deploy_ok"); val failTxt = t("deploy_fail")
     Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 24.dp).padding(bottom = 28.dp)) {
         SheetTitle(t("settings"))
         Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -304,11 +309,32 @@ private fun SettingsSheet(vm: Vm, ui: Ui, toast: (String) -> Unit) {
         }
         Divider2()
         Action(t("refresh_subs"), NB.Text) { vm.refreshSubs { toast("$it $upd") } }
+        Action(if (busy) t("deploy_busy") else t("deploy"), NB.Gold) { if (!busy) askToken = true }
         Action(t("report"), NB.Text) { clipboard.setText(AnnotatedString(vm.report())); toast(cp) }
         Action(t("delete_all"), NB.Err) { confirm = true }
         Spacer(Modifier.height(10.dp))
         Text("NetBridge ${BuildInfo.VERSION}", color = NB.Muted, fontSize = 11.sp, modifier = Modifier.align(Alignment.CenterHorizontally))
     }
+    if (askToken) AlertDialog(
+        onDismissRequest = { askToken = false }, containerColor = NB.Card,
+        title = { Text(t("deploy"), color = NB.Text) },
+        text = {
+            Column {
+                Text(t("deploy_help"), color = NB.Muted, fontSize = 13.sp)
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(value = token, onValueChange = { token = it.trim() }, singleLine = true, label = { Text(t("deploy_token")) },
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation())
+            }
+        },
+        confirmButton = { TextButton({
+            val tk = token; token = ""; askToken = false; busy = true
+            vm.deployWorker(tk) { ok, text -> busy = false; result = if (ok) "$okTxt\n$text" else "$failTxt\n$text" }
+        }) { Text(t("add_btn"), color = NB.Gold) } },
+        dismissButton = { TextButton({ askToken = false; token = "" }) { Text(t("no"), color = NB.Muted) } })
+    if (result.isNotEmpty()) AlertDialog(
+        onDismissRequest = { result = "" }, containerColor = NB.Card,
+        text = { Text(result, color = NB.Text, fontSize = 14.sp) },
+        confirmButton = { TextButton({ result = "" }) { Text(t("close"), color = NB.Gold) } })
     if (confirm) AlertDialog(
         onDismissRequest = { confirm = false }, containerColor = NB.Card,
         title = { Text(t("confirm_del"), color = NB.Text) },

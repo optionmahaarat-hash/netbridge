@@ -145,6 +145,20 @@ class Vm(app: Application) : AndroidViewModel(app) {
         store.save(profiles); refresh(); return n
     }
 
+    /** Creates the personal Worker on the user's Cloudflare account and adds its profile. onDone(ok, text): the address or the error. */
+    fun deployWorker(token: String, onDone: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val p = withContext(Dispatchers.IO) {
+                    val src = getApplication<Application>().assets.open("vless_worker.js").bufferedReader().use { it.readText() }
+                    CfDeploy.deploy(token, src, CfDeploy.realCall(if (ui.value.phase == Phase.CONNECTED) VpnSvc.httpPort else null))
+                }
+                merge(listOf(p))
+                onDone(true, p.s("server"))
+            } catch (e: Exception) { onDone(false, e.message ?: "error") }
+        }
+    }
+
     fun refreshSubs(onDone: (Int) -> Unit) {
         viewModelScope.launch {
             var total = 0

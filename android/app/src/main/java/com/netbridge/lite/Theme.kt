@@ -70,6 +70,14 @@ private val S: Map<String, Pair<String, String>> = mapOf(
     "no" to ("خیر" to "No"),
     "report" to ("کپی گزارش (برای پشتیبانی)" to "Copy report (for support)"),
     "copied" to ("کپی شد" to "Copied"),
+    "deploy" to ("ساخت Worker شخصی (Cloudflare)" to "Deploy my Worker (Cloudflare)"),
+    "deploy_help" to ("یک رله خصوصی روی حساب رایگان کلودفلر خودتان ساخته می‌شود.\n۱) در cloudflare.com وارد شوید.\n۲) My Profile ← API Tokens ← Create Token ← قالب «Edit Cloudflare Workers».\n۳) توکن را اینجا بچسبانید (ذخیره نمی‌شود).\nبرای ساخت، اینترنت بدون فیلتر لازم است." to
+        "Creates a private relay on YOUR free Cloudflare account.\n1) Sign in at cloudflare.com.\n2) My Profile > API Tokens > Create Token > 'Edit Cloudflare Workers' template.\n3) Paste the token here (it is not saved).\nNeeds an unfiltered connection while creating."),
+    "deploy_token" to ("توکن API" to "API token"),
+    "deploy_busy" to ("در حال ساخت... چند ثانیه صبر کنید" to "Creating... wait a few seconds"),
+    "deploy_ok" to ("ساخته و اضافه شد. ممکن است یک دقیقه طول بکشد تا جواب دهد:" to "Created and added. It may take a minute to start answering:"),
+    "deploy_fail" to ("ساخت ناموفق بود:" to "Could not create it:"),
+    "close" to ("بستن" to "Close"),
     "updated" to ("سرور به‌روز شد" to "server(s) updated"),
 )
 
