@@ -11,7 +11,7 @@ import html
 from app.core.bypass import PRESETS, CIPHER_SUITES, FM_STANDARD, FM_PATTNG
 from app.core import bypass as bypass_mod, presets as presets_mod, worker_exit
 from app.ui import theme
-from app.core import aether as aether_mod, cf_deploy, gscript as gscript_mod
+from app.core import aether as aether_mod, cf_deploy, gscript as gscript_mod, sources as sources_mod
 from app.storage.profiles import load_profiles, save_profiles
 from app.utils.parser import parse_many
 from app.utils.validator import validate_profile
@@ -156,6 +156,19 @@ class PresetWorker(QThread):
             self.done.emit(presets_mod.update(self.current, proxy=self.proxy))
         except Exception as e:
             self.done.emit(f"{e}")
+
+
+class SourceWorker(QThread):
+    """Downloads a public config list from its mirrors (network, so off the UI thread)."""
+    done = Signal(object)                      # (source, profiles, mirror, errors) or an error text
+    def __init__(self, source, proxy, parent=None):
+        super().__init__(parent); self.source, self.proxy = source, proxy
+    def run(self):
+        try:
+            profiles, mirror, errors = sources_mod.fetch_source(self.source, fetch_subscription, proxy=self.proxy)
+            self.done.emit((self.source, profiles, mirror, errors))
+        except Exception as e:
+            self.done.emit(str(e))
 
 
 class DeployWorker(QThread):
@@ -409,6 +422,8 @@ class MainWindow(QMainWindow):
         r7.addWidget(self.gs_btn)
         self.tor_btn = QPushButton("Tor via WARP"); self.tor_btn.clicked.connect(lambda: self.warp_aether("tor")); r7.addWidget(self.tor_btn)
         self.toronly_btn = QPushButton("Tor alone (bridges)"); self.toronly_btn.clicked.connect(lambda: self.warp_aether("tor-only")); r7.addWidget(self.toronly_btn)
+        self.free_btn = QPushButton("Get free configs"); self.free_btn.setObjectName("primary"); self.free_btn.clicked.connect(self.get_free_configs)
+        r7.addWidget(self.free_btn)
         b = QPushButton("Help / راهنما"); b.clicked.connect(lambda: HelpDialog(self).exec()); r7.addWidget(b)
         ll.addLayout(r_auto); ll.addLayout(r3); ll.addLayout(r4); ll.addLayout(r5); ll.addLayout(r6); ll.addLayout(r7)
         splitter.addWidget(left)
@@ -827,6 +842,35 @@ class MainWindow(QMainWindow):
         self._add_profiles([result])
         self.log.append(f"Your Worker is ready: {result['server']} (it may take a minute before it answers).")
         QMessageBox.information(self, "Deploy my Worker", f"Done. Added profile '{result['name']}'.\nAddress: {result['server']}")
+
+    # ---------- public config lists ----------
+    def get_free_configs(self):
+        if getattr(self, "srcw", None) and self.srcw.isRunning():
+            return
+        srcs = sources_mod.load_sources()
+        if not srcs:
+            QMessageBox.warning(self, "Free configs", "No config source is listed in assets/config_sources.json."); return
+        src = srcs[0]
+        if QMessageBox.question(self, "Free configs",
+                f"Downloads the public list '{src['name']}' ({src['page']}) and replaces its previous servers.\n\n"
+                "Careful: these servers belong to other people. Your traffic passes through them, so do not use them for banking or "
+                "private accounts - use your own Worker (Deploy my Worker) for that.\n\nAfter it finishes, press AUTO to find the best one. Continue?") != QMessageBox.Yes:
+            return
+        self.free_btn.setEnabled(False)
+        self.srcw = SourceWorker(src, self.proxy_url() if self.xray.running else None, self)
+        self.srcw.done.connect(self._free_done)
+        self.srcw.start()
+
+    def _free_done(self, result):
+        self.free_btn.setEnabled(True)
+        if not isinstance(result, tuple):
+            QMessageBox.warning(self, "Free configs", f"Could not download the list:\n{result}"); return
+        src, profiles, mirror, errors = result
+        self.profiles[:] = sources_mod.drop_group(self.profiles, src["group"])
+        profiles = self._filter_tls(profiles)
+        self.log.append(f"Free configs from {mirror}")
+        self._report(*self._add_profiles(profiles, src["group"]), errors)
+        self.log.append("Press AUTO to test them and connect to the best one.")
 
     # ---------- Google Script relay ----------
     def google_script(self):

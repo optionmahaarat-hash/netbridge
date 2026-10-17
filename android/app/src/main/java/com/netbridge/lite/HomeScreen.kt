@@ -283,6 +283,9 @@ private fun ServerRow(name: String, sub: String, ping: Int?, selected: Boolean, 
 private fun SettingsSheet(vm: Vm, ui: Ui, toast: (String) -> Unit) {
     val clipboard = LocalClipboardManager.current
     var confirm by remember { mutableStateOf(false) }
+    var askFree by remember { mutableStateOf(false) }
+    var freeBusy by remember { mutableStateOf(false) }
+    val freeOk = t("free_ok"); val freeFail = t("free_fail")
     var askToken by remember { mutableStateOf(false) }
     var token by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
@@ -309,12 +312,22 @@ private fun SettingsSheet(vm: Vm, ui: Ui, toast: (String) -> Unit) {
         }
         Divider2()
         Action(t("refresh_subs"), NB.Text) { vm.refreshSubs { toast("$it $upd") } }
+        Action(if (freeBusy) t("free_busy") else t("free"), NB.Gold) { if (!freeBusy) askFree = true }
         Action(if (busy) t("deploy_busy") else t("deploy"), NB.Gold) { if (!busy) askToken = true }
         Action(t("report"), NB.Text) { clipboard.setText(AnnotatedString(vm.report())); toast(cp) }
         Action(t("delete_all"), NB.Err) { confirm = true }
         Spacer(Modifier.height(10.dp))
         Text("NetBridge ${BuildInfo.VERSION}", color = NB.Muted, fontSize = 11.sp, modifier = Modifier.align(Alignment.CenterHorizontally))
     }
+    if (askFree) AlertDialog(
+        onDismissRequest = { askFree = false }, containerColor = NB.Card,
+        title = { Text(t("free"), color = NB.Text) },
+        text = { Text(t("free_warn"), color = NB.Muted, fontSize = 13.sp) },
+        confirmButton = { TextButton({
+            askFree = false; freeBusy = true
+            vm.getFreeConfigs { ok, text -> freeBusy = false; result = if (ok) "$text $freeOk" else "$freeFail\n$text" }
+        }) { Text(t("yes"), color = NB.Gold) } },
+        dismissButton = { TextButton({ askFree = false }) { Text(t("no"), color = NB.Muted) } })
     if (askToken) AlertDialog(
         onDismissRequest = { askToken = false }, containerColor = NB.Card,
         title = { Text(t("deploy"), color = NB.Text) },

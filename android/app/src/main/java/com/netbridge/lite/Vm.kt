@@ -145,6 +145,21 @@ class Vm(app: Application) : AndroidViewModel(app) {
         store.save(profiles); refresh(); return n
     }
 
+    /** Downloads the public list, replaces its previous servers and adds the fresh ones. onDone(ok, text): the count or the error. */
+    fun getFreeConfigs(onDone: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val proxy = if (ui.value.phase == Phase.CONNECTED) VpnSvc.httpPort else null
+                val (found, _) = withContext(Dispatchers.IO) { Sources.fetchFirst(Sources.MIRRORS) { Net.fetchSubscription(it, proxy).first } }
+                val fresh = found.onEach { it.put("group", Sources.GROUP) }
+                val keep = Sources.dropGroup(profiles.toList(), Sources.GROUP)
+                profiles.clear(); profiles.addAll(keep)
+                val n = merge(fresh)
+                onDone(true, n.toString())
+            } catch (e: Exception) { onDone(false, e.message ?: "error") }
+        }
+    }
+
     /** Creates the personal Worker on the user's Cloudflare account and adds its profile. onDone(ok, text): the address or the error. */
     fun deployWorker(token: String, onDone: (Boolean, String) -> Unit) {
         viewModelScope.launch {

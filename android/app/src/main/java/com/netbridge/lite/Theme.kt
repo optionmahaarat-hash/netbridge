@@ -70,6 +70,11 @@ private val S: Map<String, Pair<String, String>> = mapOf(
     "no" to ("خیر" to "No"),
     "report" to ("کپی گزارش (برای پشتیبانی)" to "Copy report (for support)"),
     "copied" to ("کپی شد" to "Copied"),
+    "free" to ("دریافت کانفیگ رایگان (عمومی)" to "Get free configs (public)"),
+    "free_busy" to ("در حال دریافت..." to "Downloading..."),
+    "free_ok" to ("سرور تازه اضافه شد. حالا روی «خودکار» وصل شوید تا بهترین پیدا شود." to "new server(s) added. Now connect on Auto to find the best one."),
+    "free_fail" to ("دریافت ناموفق بود:" to "Could not download:"),
+    "free_warn" to ("این سرورها مال دیگران است و ترافیک شما از آن‌ها رد می‌شود؛ برای بانک و حساب‌های شخصی استفاده نکنید. ادامه؟" to "These servers belong to other people and your traffic passes through them - do not use them for banking or private accounts. Continue?"),
     "deploy" to ("ساخت Worker شخصی (Cloudflare)" to "Deploy my Worker (Cloudflare)"),
     "deploy_help" to ("یک رله خصوصی روی حساب رایگان کلودفلر خودتان ساخته می‌شود.\n۱) در cloudflare.com وارد شوید.\n۲) My Profile ← API Tokens ← Create Token ← قالب «Edit Cloudflare Workers».\n۳) توکن را اینجا بچسبانید (ذخیره نمی‌شود).\nبرای ساخت، اینترنت بدون فیلتر لازم است." to
         "Creates a private relay on YOUR free Cloudflare account.\n1) Sign in at cloudflare.com.\n2) My Profile > API Tokens > Create Token > 'Edit Cloudflare Workers' template.\n3) Paste the token here (it is not saved).\nNeeds an unfiltered connection while creating."),
