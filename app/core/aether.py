@@ -174,8 +174,9 @@ def installed(dest_dir=None):
 MODES = ("warp", "tor", "tor-only")            # warp = WARP only; tor = Tor carried inside the WARP tunnel; tor-only = plain Tor (bridges when blocked)
 
 
-def build_args(exe, port=DEFAULT_PORT, mode="h3", config=None, protocol="masque", tor=None, tor_port=None, tor_dir=None):
+def build_args(exe, port=DEFAULT_PORT, mode="h3", config=None, protocol="masque", tor=None, tor_port=None, tor_dir=None, family="4"):
     """Command line. Every choice is given as a flag, because a flag suppresses that question (Aether asks interactively otherwise).
+    family: which gateway addresses to scan: "4" (IPv4), "6" (IPv6) or "dual". Some networks only let IPv6 through.
     mode: "h3" = MASQUE over HTTP/3 (default), "h2" = MASQUE over HTTP/2 with ClientHello fragmentation (when UDP/QUIC is blocked).
     tor: None, "tor" (Tor inside the tunnel; its proxy is tor_port) or "tor-only" (no WARP; the proxy on `port` is Tor)."""
     if protocol not in ("masque", "wg", "gool"):
@@ -184,10 +185,12 @@ def build_args(exe, port=DEFAULT_PORT, mode="h3", config=None, protocol="masque"
         raise ValueError("mode must be h3 or h2")
     if tor not in (None, "tor", "tor-only"):
         raise ValueError("tor must be None, 'tor' or 'tor-only'")
+    if family not in ("4", "6", "dual"):
+        raise ValueError("family must be 4, 6 or dual")
     if tor == "tor-only":
         args = [str(exe), "--bind", f"127.0.0.1:{int(port)}", "--tor-only"]
     else:
-        args = [str(exe), "--bind", f"127.0.0.1:{int(port)}", "-4", f"--{protocol}", "--turbo", "--noize", "firewall", "--quick-reconnect"]
+        args = [str(exe), "--bind", f"127.0.0.1:{int(port)}", {"4": "-4", "6": "-6", "dual": "--dual"}[family], f"--{protocol}", "--turbo", "--noize", "firewall", "--quick-reconnect"]
         if protocol == "masque" and mode == "h2":
             args += ["--h2", "--fragment"]
         if tor == "tor":
@@ -242,16 +245,16 @@ class AetherManager:
                 self._lines.append(line.rstrip())
                 del self._lines[:-200]
 
-    def _launch(self, port, mode, tor=None, tor_port=None):
+    def _launch(self, port, mode, tor=None, tor_port=None, protocol="masque", family="4"):
         self.data_dir.mkdir(parents=True, exist_ok=True)
         args = build_args(self.executable, port, mode, config=self.data_dir / "aether.toml", tor=tor, tor_port=tor_port,
-                          tor_dir=self.data_dir / "tor")
+                          tor_dir=self.data_dir / "tor", protocol=protocol, family=family)
         self.process = subprocess.Popen(args, cwd=str(self.data_dir), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                         stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", creationflags=NOWIN)
         threading.Thread(target=self._pump, args=(self.process,), daemon=True).start()
 
     def start(self, wait=45, cancelled=lambda: False, progress=lambda s: None, ready=socks_ready, sleep=time.sleep,
-              modes=("h3", "h2"), kind="warp"):
+              modes=("h3", "h2"), kind="warp", protocol="masque", family="4"):
         """Starts Aether and waits until the SOCKS5 port NetBridge will use works. kind: "warp", "tor" or "tor-only".
         WARP/Tor-in-tunnel try HTTP/3 first, then HTTP/2+fragment. Returns that port. Raises AetherError with the last log lines."""
         if kind not in MODES:
@@ -264,11 +267,12 @@ class AetherManager:
         use = port if kind != "tor" else tor_port
         if kind != "warp":
             wait = max(wait, 240)                                   # Tor downloads its directory first; bridges can take longer still
-        for mode in (modes if kind != "tor-only" else ("h3",)):
-            what = {"warp": f"MASQUE {'HTTP/3' if mode == 'h3' else 'HTTP/2 + fragment'}", "tor": f"Tor inside MASQUE {mode.upper()}",
+        for mode in (modes if kind != "tor-only" and (protocol == "masque" or kind == "tor") else ("h3",)):
+            what = {"warp": (f"MASQUE {'HTTP/3' if mode == 'h3' else 'HTTP/2 + fragment'}" if protocol == "masque"
+                             else {"wg": "WireGuard", "gool": "WARP-in-WARP (gool)"}.get(protocol, protocol)) + f", IPv{family}", "tor": f"Tor inside MASQUE {mode.upper()}",
                     "tor-only": "Tor alone"}[kind]
             progress(f"Starting Aether ({what}) on port {use} - the first start can take a few minutes ...")
-            self._launch(port, mode, tor=None if kind == "warp" else kind, tor_port=tor_port)
+            self._launch(port, mode, tor=None if kind == "warp" else kind, tor_port=tor_port, protocol=protocol, family=family)
             end = time.time() + wait
             while time.time() < end:
                 if cancelled():

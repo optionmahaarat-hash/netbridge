@@ -171,13 +171,18 @@ class DeployWorker(QThread):
             self.done.emit(str(e))
 
 
+WARP_CHOICES = [("MASQUE IPv4 (default)", "masque", "4"), ("MASQUE IPv6", "masque", "6"),
+                ("WireGuard IPv4", "wg", "4"), ("WireGuard IPv6", "wg", "6"), ("WARP-in-WARP (gool)", "gool", "4")]
+
+
 class AetherWorker(QThread):
     """Installs the Aether core when it is missing, then starts it and waits for its SOCKS5 port.
     Runs off the UI thread: the first start scans for a gateway and can take a minute."""
     status = Signal(str)
     done = Signal(object)                      # the port (int) or an error text
-    def __init__(self, manager, proxy, kind="warp", parent=None):
+    def __init__(self, manager, proxy, kind="warp", parent=None, protocol="masque", family="4"):
         super().__init__(parent); self.mgr, self.proxy, self.kind, self._stop = manager, proxy, kind, False
+        self.protocol, self.family = protocol, family
     def stop(self):
         self._stop = True
     def run(self):
@@ -185,7 +190,8 @@ class AetherWorker(QThread):
             if not aether_mod.installed():
                 path, tag = aether_mod.download_core(proxy=self.proxy, progress=self.status.emit)
                 self.status.emit(f"Aether {tag} installed: {path}")
-            port = self.mgr.start(cancelled=lambda: self._stop, progress=self.status.emit, kind=self.kind)
+            port = self.mgr.start(cancelled=lambda: self._stop, progress=self.status.emit, kind=self.kind,
+                                 protocol=self.protocol, family=self.family)
             self.done.emit(port)
         except Exception as e:
             self.done.emit(str(e))
@@ -391,6 +397,11 @@ class MainWindow(QMainWindow):
         b = QPushButton("Select non-TLS (plain) profiles"); b.clicked.connect(self.select_plain); r6.addWidget(b)
         self.warp_btn = QPushButton("WARP (Aether core)"); self.warp_btn.setObjectName("primary")
         self.warp_btn.clicked.connect(lambda: self.warp_aether("warp")); r6.addWidget(self.warp_btn)
+        self.warp_mode = QComboBox()
+        for label, proto, fam in WARP_CHOICES:
+            self.warp_mode.addItem(label, (proto, fam))
+        self.warp_mode.setToolTip("Which WARP transport and IP version Aether uses. If the first one does not connect, try another.")
+        r6.addWidget(self.warp_mode)
         self.deploy_btn = QPushButton("Deploy my Worker (Cloudflare)"); self.deploy_btn.setObjectName("primary")
         self.deploy_btn.clicked.connect(self.deploy_worker); r6.addWidget(self.deploy_btn)
         r7 = QHBoxLayout()
@@ -787,7 +798,8 @@ class MainWindow(QMainWindow):
                     "checked with its SHA-256 and kept in cores/aether/. Continue?") != QMessageBox.Yes:
                 return
         self.warp_btn.setEnabled(False); self.tor_btn.setEnabled(False); self.toronly_btn.setEnabled(False)
-        self.aetherw = AetherWorker(self.aether, self.proxy_url_for_download(), kind, self)
+        proto, fam = self.warp_mode.currentData() if kind == "warp" else ("masque", "4")
+        self.aetherw = AetherWorker(self.aether, self.proxy_url_for_download(), kind, self, protocol=proto, family=fam)
         self.aetherw.status.connect(self.log.append)
         self.aetherw.done.connect(self._warp_ready)
         self.aetherw.start()

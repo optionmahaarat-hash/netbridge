@@ -247,3 +247,31 @@ def test_manager_tor_waits_on_the_tor_port_and_reports_missing_tor_support(tmp_p
         m.start(ready=lambda p: False, sleep=lambda s: None, kind="tor-only")
     with pytest.raises(ValueError):
         m.start(kind="nope")
+
+
+def test_build_args_family_and_transport():
+    assert "-4" in aether.build_args("a.exe", 1900) and "-6" not in aether.build_args("a.exe", 1900)
+    v6 = aether.build_args("a.exe", 1900, "h3", family="6")
+    assert "-6" in v6 and "-4" not in v6
+    assert "--dual" in aether.build_args("a.exe", 1900, family="dual")
+    w = aether.build_args("a.exe", 1900, "h3", protocol="wg", family="6")
+    assert "--wg" in w and "-6" in w and "--h2" not in w
+    assert "--gool" in aether.build_args("a.exe", 1900, protocol="gool")
+    with pytest.raises(ValueError):
+        aether.build_args("a.exe", 1, family="5")
+
+
+def test_manager_wireguard_tries_one_mode_and_passes_choices(tmp_path, monkeypatch):
+    (tmp_path / "a.exe").write_bytes(b"x")
+    m = aether.AetherManager(executable=tmp_path / "a.exe", data_dir=tmp_path / "d")
+    seen = []
+
+    class Dead:
+        stdout = None
+        def poll(self): return 1
+        def terminate(self): pass
+    monkeypatch.setattr(m, "_launch", lambda port, mode, **kw: (seen.append((mode, kw)), setattr(m, "process", Dead())))
+    monkeypatch.setattr(aether, "free_port", lambda *a, **k: 1900)
+    with pytest.raises(aether.AetherError):
+        m.start(ready=lambda p: False, sleep=lambda s: None, protocol="wg", family="6")
+    assert len(seen) == 1 and seen[0][1]["protocol"] == "wg" and seen[0][1]["family"] == "6"        # no HTTP/2 retry for WireGuard
