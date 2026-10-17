@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "id": "patterniha",
+      "name": "patterniha Free-Configs",
+      "group": "Free: patterniha",
+      "page": "https://github.com/patterniha/Free-Configs",
+      "mirrors": [
+        "https://raw.githubusercontent.com/patterniha/Free-Configs/main/configs.txt",
+        "https://cdn.jsdelivr.net/gh/patterniha/Free-Configs@main/configs.txt"
+      ]
+    }
+  ]
+}

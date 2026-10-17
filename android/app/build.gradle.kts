@@ -12,8 +12,8 @@ android {
         applicationId = "com.netbridge.lite"
         minSdk = 26
         targetSdk = 33            // 33: no foreground-service-type rules for the VPN service
-        versionCode = 2
-        versionName = "0.1.1"
+        versionCode = 3
+        versionName = "0.2.0"
         ndk { abiFilters += "arm64-v8a" }
     }
 

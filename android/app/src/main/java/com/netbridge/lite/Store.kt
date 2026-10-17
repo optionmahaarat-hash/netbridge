@@ -15,6 +15,12 @@ class Store(private val ctx: Context) {
     var iranDirect: Boolean
         get() = sp.getBoolean("iran", true)
         set(v) { sp.edit().putBoolean("iran", v).apply() }
+    var freeAuto: Boolean                                           // refresh the public config list once a day when the app opens
+        get() = sp.getBoolean("free_auto", false)
+        set(v) { sp.edit().putBoolean("free_auto", v).apply() }
+    var freeLast: Long
+        get() = sp.getLong("free_last", 0L)
+        set(v) { sp.edit().putLong("free_last", v).apply() }
     var selected: String
         get() = sp.getString("selected", "auto") ?: "auto"
         set(v) { sp.edit().putString("selected", v).apply() }

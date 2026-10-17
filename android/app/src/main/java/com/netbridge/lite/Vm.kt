@@ -17,7 +17,7 @@ data class Ui(
     val phase: Phase = Phase.IDLE, val done: Int = 0, val total: Int = 0,
     val profiles: List<P> = emptyList(), val rev: Int = 0, val selected: String = "auto",
     val exit: String = "", val msg: String = "", val warn: String = "",
-    val iran: Boolean = true, val lang: String = "fa", val clipNew: Int = 0
+    val iran: Boolean = true, val lang: String = "fa", val clipNew: Int = 0, val freeAuto: Boolean = false
 )
 
 class Vm(app: Application) : AndroidViewModel(app) {
@@ -26,10 +26,11 @@ class Vm(app: Application) : AndroidViewModel(app) {
     private var job: Job? = null
     private var clipText = ""
     private var clipSeen = ""
-    val ui = MutableStateFlow(Ui(profiles = profiles.toList(), selected = store.selected, iran = store.iranDirect, lang = store.lang))
+    val ui = MutableStateFlow(Ui(profiles = profiles.toList(), selected = store.selected, iran = store.iranDirect, lang = store.lang, freeAuto = store.freeAuto))
 
     init {
         Presets.load(app)
+        if (store.freeAuto && Sources.due(store.freeLast, System.currentTimeMillis())) getFreeConfigs { ok, text -> logLine("free configs: " + if (ok) "$text new" else text) }
         viewModelScope.launch {
             VpnSvc.connected.collect { c ->
                 val ph = ui.value.phase
@@ -145,6 +146,36 @@ class Vm(app: Application) : AndroidViewModel(app) {
         store.save(profiles); refresh(); return n
     }
 
+    /** Downloads the public list, replaces its previous servers and adds the fresh ones. onDone(ok, text): the count or the error. */
+    fun getFreeConfigs(onDone: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val proxy = if (ui.value.phase == Phase.CONNECTED) VpnSvc.httpPort else null
+                val (found, _) = withContext(Dispatchers.IO) { Sources.fetchFirst(Sources.MIRRORS) { Net.fetchSubscription(it, proxy).first } }
+                val fresh = found.onEach { it.put("group", Sources.GROUP) }
+                val keep = Sources.dropGroup(profiles.toList(), Sources.GROUP)
+                profiles.clear(); profiles.addAll(keep)
+                val n = merge(fresh)
+                store.freeLast = System.currentTimeMillis()
+                onDone(true, n.toString())
+            } catch (e: Exception) { onDone(false, e.message ?: "error") }
+        }
+    }
+
+    /** Creates the personal Worker on the user's Cloudflare account and adds its profile. onDone(ok, text): the address or the error. */
+    fun deployWorker(token: String, onDone: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val p = withContext(Dispatchers.IO) {
+                    val src = getApplication<Application>().assets.open("vless_worker.js").bufferedReader().use { it.readText() }
+                    CfDeploy.deploy(token, src, CfDeploy.realCall(if (ui.value.phase == Phase.CONNECTED) VpnSvc.httpPort else null))
+                }
+                merge(listOf(p))
+                onDone(true, p.s("server"))
+            } catch (e: Exception) { onDone(false, e.message ?: "error") }
+        }
+    }
+
     fun refreshSubs(onDone: (Int) -> Unit) {
         viewModelScope.launch {
             var total = 0
@@ -157,6 +188,7 @@ class Vm(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------- settings / clipboard ----------
+    fun setFreeAuto(v: Boolean) { store.freeAuto = v; set { it.copy(freeAuto = v) } }
     fun setIran(v: Boolean) { store.iranDirect = v; set { it.copy(iran = v) } }
     fun setLang(v: String) { store.lang = v; set { it.copy(lang = v) } }
     fun clearMsg() = set { it.copy(msg = "") }
@@ -184,4 +216,4 @@ class Vm(app: Application) : AndroidViewModel(app) {
     fun dismissClip() { clipSeen = clipText; set { it.copy(clipNew = 0) } }
 }
 
-object BuildInfo { const val VERSION = "0.1.1" }
+object BuildInfo { const val VERSION = "0.2.0" }
