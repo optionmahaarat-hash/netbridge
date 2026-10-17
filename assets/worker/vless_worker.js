@@ -50,6 +50,7 @@ function session(ws, proxyip) {
   let writer = null;
   let socket = null;
   let first = true;
+  let chain = Promise.resolve();                 // messages are handled strictly in order (open() is async)
 
   const close = () => { try { ws.close(); } catch (e) {} try { socket && socket.close(); } catch (e) {} };
 
@@ -78,7 +79,8 @@ function session(ws, proxyip) {
     })).catch(close);
   }
 
-  ws.addEventListener('message', async (ev) => {
+  ws.addEventListener('message', (ev) => { chain = chain.then(() => onMessage(ev)); });
+  async function onMessage(ev) {
     try {
       const data = ev.data instanceof ArrayBuffer ? ev.data : await new Response(ev.data).arrayBuffer();
       if (first) {
@@ -90,7 +92,7 @@ function session(ws, proxyip) {
         await writer.write(new Uint8Array(data));
       }
     } catch (e) { close(); }
-  });
+  }
   ws.addEventListener('close', close);
   ws.addEventListener('error', close);
 }
