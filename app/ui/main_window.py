@@ -11,7 +11,7 @@ import html
 from app.core.bypass import PRESETS, CIPHER_SUITES, FM_STANDARD, FM_PATTNG
 from app.core import bypass as bypass_mod, presets as presets_mod, worker_exit
 from app.ui import theme
-from app.core import aether as aether_mod, cf_deploy
+from app.core import aether as aether_mod, cf_deploy, gscript as gscript_mod
 from app.storage.profiles import load_profiles, save_profiles
 from app.utils.parser import parse_many
 from app.utils.validator import validate_profile
@@ -44,6 +44,8 @@ AUTO_MAX = 30
 from app.version import VERSION
 from app.ui.icon import app_icon, logo_pixmap
 from app.ui.about_dialog import AboutDialog
+from app.ui.help_dialog import HelpDialog
+from app.ui.gscript_dialog import GScriptDialog
 
 
 class ImportDialog(QDialog):
@@ -322,13 +324,16 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"NetBridge v{VERSION}")
         self.setWindowIcon(app_icon())
-        self.menuBar().addMenu("&Help").addAction("&About NetBridge", lambda: AboutDialog(self).exec())
+        hm = self.menuBar().addMenu("&Help")
+        hm.addAction("&Guide / راهنما", lambda: HelpDialog(self).exec())
+        hm.addAction("&About NetBridge", lambda: AboutDialog(self).exec())
         self.resize(1150, 700)
         self.profiles = load_profiles()
         self.settings = load_settings()
         self.view = []; self.worker = None; self.auto_worker = None; self._auto_wins = []; self.pending_best = False; self._done = 0; self._total = 0
         self.xray = XrayManager()
         self.aether = aether_mod.AetherManager()
+        self.gscript = None                                      # running Google Script relay (local SOCKS5 port) or None
         self.socks_port, self.http_port = ports.SOCKS, ports.HTTP
         self.active_config = Path("configs/active.json")
         self.check_config_path = Path("configs/check.json")      # validation writes here, never over the live config
@@ -388,7 +393,11 @@ class MainWindow(QMainWindow):
         self.warp_btn.clicked.connect(self.warp_aether); r6.addWidget(self.warp_btn)
         self.deploy_btn = QPushButton("Deploy my Worker (Cloudflare)"); self.deploy_btn.setObjectName("primary")
         self.deploy_btn.clicked.connect(self.deploy_worker); r6.addWidget(self.deploy_btn)
-        ll.addLayout(r_auto); ll.addLayout(r3); ll.addLayout(r4); ll.addLayout(r5); ll.addLayout(r6)
+        r7 = QHBoxLayout()
+        self.gs_btn = QPushButton("Google Script"); self.gs_btn.setObjectName("primary"); self.gs_btn.clicked.connect(self.google_script)
+        r7.addWidget(self.gs_btn)
+        b = QPushButton("Help / راهنما"); b.clicked.connect(lambda: HelpDialog(self).exec()); r7.addWidget(b)
+        ll.addLayout(r_auto); ll.addLayout(r3); ll.addLayout(r4); ll.addLayout(r5); ll.addLayout(r6); ll.addLayout(r7)
         splitter.addWidget(left)
 
         right = QWidget(); rl = QVBoxLayout(right)
@@ -798,6 +807,22 @@ class MainWindow(QMainWindow):
         self.log.append(f"Your Worker is ready: {result['server']} (it may take a minute before it answers).")
         QMessageBox.information(self, "Deploy my Worker", f"Done. Added profile '{result['name']}'.\nAddress: {result['server']}")
 
+    # ---------- Google Script relay ----------
+    def google_script(self):
+        dlg = GScriptDialog(self, self.gscript)
+        dlg.started.connect(self._gscript_ready)
+        dlg.exec()
+
+    def _gscript_ready(self, server):
+        self.gscript = server
+        p = next((q for q in self.profiles if gscript_mod.is_gscript(q)), None)
+        if p is None:
+            p = gscript_mod.local_profile(server.port)
+            self.profiles.append(p)
+        p["port"] = server.port
+        save_profiles(self.profiles); self.refresh(keep=p)
+        self.log.append(f"Google Script relay is running on 127.0.0.1:{server.port}. Select 'Google Script' and press CONNECT (web pages only).")
+
     def proxy_url_for_download(self):
         return f"http://127.0.0.1:{self.http_port}" if self.xray.running else None
 
@@ -831,7 +856,8 @@ class MainWindow(QMainWindow):
                 note = (f"Auto balancer over {len(profs)} verified profile(s)" if cmode == "auto"
                         else profs[0].get("name", ""))
             elif mode == "auto":
-                pool = [self.profiles[i] for i in self.view if self.profiles[i].get("delay", 0) != -1]
+                pool = [self.profiles[i] for i in self.view if self.profiles[i].get("delay", 0) != -1
+                        and self.profiles[i].get("engine") not in ("aether", "gscript")]
                 pool = pool[:AUTO_MAX]
                 if not pool:
                     QMessageBox.information(self, "NetBridge", "No usable profiles in this group."); return
@@ -849,6 +875,8 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "NetBridge", "The WARP profile needs the Aether core running. Press the 'WARP (Aether core)' button."); return
             if not any(aether_mod.is_aether(q) for q in profs) and self.aether.running:
                 self.aether.stop()
+            if any(gscript_mod.is_gscript(q) for q in profs) and not (self.gscript and self.gscript.running):
+                QMessageBox.information(self, "NetBridge", "The Google Script profile needs the relay running. Open 'Google Script' and press 'Test and Start'."); return
             write_config(profs, self.active_config, self.settings, mode=cmode, pin_profile=self._pin_profile(), all_profiles=self.profiles,
                          socks_port=self.socks_port, http_port=self.http_port)
             self.xray.start(self.active_config)
@@ -1126,4 +1154,6 @@ class MainWindow(QMainWindow):
         w = getattr(self, "aetherw", None)
         if w is not None and w.isRunning():
             w.stop(); w.wait(8000)
-        self.aether.stop(); self.xray.stop(); self._proxy(False); save_profiles(self.profiles); e.accept()
+        self.aether.stop()
+        if self.gscript: self.gscript.stop()
+        self.xray.stop(); self._proxy(False); save_profiles(self.profiles); e.accept()
