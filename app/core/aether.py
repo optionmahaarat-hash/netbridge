@@ -234,6 +234,23 @@ def socks_ready(port, timeout=1.0):
         return False
 
 
+def socks_tunnel_ok(port, host="www.google.com", dport=443, timeout=8.0):
+    """True when a SOCKS5 CONNECT through 127.0.0.1:port really reaches `host`. Tor and Psiphon open their local SOCKS port
+    long before their tunnel is up, so 'it answers the greeting' is not enough: this proves traffic goes out."""
+    try:
+        with socket.create_connection(("127.0.0.1", int(port)), timeout=timeout) as s:
+            s.settimeout(timeout)
+            s.sendall(b"\x05\x01\x00")
+            if s.recv(2) != b"\x05\x00":
+                return False
+            name = host.encode()
+            s.sendall(b"\x05\x01\x00\x03" + bytes([len(name)]) + name + dport.to_bytes(2, "big"))
+            rep = s.recv(4)
+            return len(rep) >= 2 and rep[1] == 0
+    except OSError:
+        return False
+
+
 def free_port(start=DEFAULT_PORT, tries=20):
     for p in range(start, start + tries):
         with socket.socket() as s:
@@ -304,12 +321,13 @@ class AetherManager:
                          protocol=protocol, family=family, psiphon=kind if kind.startswith("psiphon") else None,
                          psiphon_port=side_port if kind == "psiphon" else None, region=region)
             end = time.time() + wait
+            check = ready if (ready is not socks_ready or kind == "warp") else socks_tunnel_ok
             while time.time() < end:
                 if cancelled():
                     self.stop(); raise AetherError("cancelled")
                 if self.process.poll() is not None:
                     break
-                if ready(use):
+                if check(use):
                     self.port, self.kind = use, kind
                     return use
                 sleep(0.5)
