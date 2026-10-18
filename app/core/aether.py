@@ -271,7 +271,12 @@ class AetherManager:
         args = build_args(self.executable, port, mode, config=self.data_dir / "aether.toml", tor=tor, tor_port=tor_port,
                           tor_dir=self.data_dir / "tor", protocol=protocol, family=family,
                           psiphon=psiphon, psiphon_port=psiphon_port, psiphon_dir=self.data_dir / "psiphon", region=region)
-        self.process = subprocess.Popen(args, cwd=str(self.data_dir), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        env = None
+        if getattr(self, "proxy_env", None):                     # registration (api.cloudflareclient.com) is filtered on some networks:
+            env = dict(os.environ)                               # hand the running NetBridge proxy to Aether in case it honours these
+            for k in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
+                env[k] = self.proxy_env
+        self.process = subprocess.Popen(args, cwd=str(self.data_dir), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, env=env,
                                         stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", creationflags=NOWIN)
         threading.Thread(target=self._pump, args=(self.process,), daemon=True).start()
 
@@ -288,7 +293,7 @@ class AetherManager:
         side_port = free_port(port + 1) if kind in SIDE_KINDS else None
         use = side_port if kind in SIDE_KINDS else port
         if kind != "warp":
-            wait = max(wait, 240)                                   # Tor downloads its directory first; bridges can take longer still
+            wait = max(wait, 420 if kind in ONLY_KINDS else 240)                                   # Tor downloads its directory first; bridges can take longer still
         for mode in (modes if kind not in ONLY_KINDS and (protocol == "masque" or kind in SIDE_KINDS) else ("h3",)):
             what = {"warp": (f"MASQUE {'HTTP/3' if mode == 'h3' else 'HTTP/2 + fragment'}" if protocol == "masque"
                              else {"wg": "WireGuard", "gool": "WARP-in-WARP (gool)"}.get(protocol, protocol)) + f", IPv{family}",

@@ -208,6 +208,7 @@ class AetherWorker(QThread):
             if not aether_mod.installed():
                 path, tag = aether_mod.download_core(proxy=self.proxy, progress=self.status.emit)
                 self.status.emit(f"Aether {tag} installed: {path}")
+            self.mgr.proxy_env = self.proxy
             port = self.mgr.start(cancelled=lambda: self._stop, progress=self.status.emit, kind=self.kind,
                                  protocol=self.protocol, family=self.family, region=self.region)
             self.done.emit(port)
