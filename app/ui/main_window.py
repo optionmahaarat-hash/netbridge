@@ -4,7 +4,7 @@ from PySide6.QtCore import QTimer, QThread, Signal
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QPushButton,
     QLabel, QTextEdit, QLineEdit, QMessageBox, QDialog, QFormLayout,
-    QDialogButtonBox, QFileDialog, QSplitter, QComboBox, QCheckBox, QInputDialog, QAbstractItemView
+    QDialogButtonBox, QFileDialog, QSplitter, QComboBox, QCheckBox, QInputDialog, QAbstractItemView, QScrollArea, QFrame, QApplication
 )
 import json
 import html
@@ -234,8 +234,12 @@ class RoutingDialog(QDialog):
     def __init__(self, r, profiles=(), parent=None):
         super().__init__(parent)
         self.setWindowTitle("Routing - skip the tunnel for some sites")
-        self.resize(680, 760)
-        lay = QVBoxLayout(self)
+        outer = QVBoxLayout(self)                      # the form scrolls, the OK / Cancel buttons stay visible on small screens
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame)
+        body = QWidget(); scroll.setWidget(body); outer.addWidget(scroll)
+        lay = QVBoxLayout(body)
+        scr = QApplication.primaryScreen()
+        self.resize(680, min(760, int(scr.availableGeometry().height() * 0.9)) if scr else 700)
         self.iran = QCheckBox("Iranian sites go direct (.ir + Iranian site list) - they reject foreign IPs")
         self.iran.setChecked(bool(r.get("iran")))
         self.lan = QCheckBox("Local network / private IPs go direct")
@@ -278,7 +282,7 @@ class RoutingDialog(QDialog):
         lay.addWidget(self.proxy)
         lay.addWidget(QLabel("A site name also covers its subdomains. Applies on the next connect (auto-reconnects if connected)."))
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.accepted.connect(self.accept); bb.rejected.connect(self.reject); lay.addWidget(bb)
+        bb.accepted.connect(self.accept); bb.rejected.connect(self.reject); outer.addWidget(bb)
 
     def add_preset(self):
         have = {x.strip() for x in self.pin_sites.toPlainText().splitlines() if x.strip()}
