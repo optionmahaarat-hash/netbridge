@@ -32,3 +32,20 @@ def test_manager_writes_bridge_file(tmp_path, monkeypatch):
     m._launch(1900, "h3", tor="tor-only")
     assert (tmp_path / "tor_bridges.txt").read_text().strip() == "obfs4 192.0.2.55:1 AA cert=x"
     assert "--tor-bridges" in seen["args"]
+
+
+def test_stop_during_start_is_cancel_not_crash(tmp_path, monkeypatch):
+    import pytest
+    m = aether.AetherManager(executable=tmp_path / "a.exe", data_dir=tmp_path)
+    (tmp_path / "a.exe").write_bytes(b"x")
+    class P:
+        stdout = iter(())
+        def poll(self): return None
+        def terminate(self): pass
+        def wait(self, timeout=None): pass
+    monkeypatch.setattr(aether.subprocess, "Popen", lambda *a, **k: P())
+    def ready(port):
+        m.process = None                                   # the user pressed Disconnect meanwhile
+        return False
+    with pytest.raises(aether.AetherError, match="cancelled"):
+        m.start(ready=ready, sleep=lambda s: None, kind="tor-only")

@@ -356,12 +356,15 @@ class AetherManager:
             self._launch(port, mode, tor=kind if kind.startswith("tor") else None, tor_port=side_port if kind == "tor" else None,
                          protocol=protocol, family=family, psiphon=kind if kind.startswith("psiphon") else None,
                          psiphon_port=side_port if kind == "psiphon" else None, region=region)
+            proc = self.process
             end = time.time() + wait
             check = ready if (ready is not socks_ready or kind == "warp") else socks_tunnel_ok
             while time.time() < end:
                 if cancelled():
                     self.stop(); raise AetherError("cancelled")
-                if self.process.poll() is not None:
+                if self.process is not proc:                     # Disconnect / another connect stopped it while it was starting
+                    raise AetherError("cancelled")
+                if proc.poll() is not None:
                     break
                 if check(use):
                     self.port, self.kind = use, kind
