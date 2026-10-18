@@ -47,6 +47,7 @@ from app.ui.icon import app_icon, logo_pixmap
 from app.ui.about_dialog import AboutDialog
 from app.ui.help_dialog import HelpDialog
 from app.ui.gscript_dialog import GScriptDialog
+from app.ui.tg_dialog import TgProxyDialog
 
 
 class ImportDialog(QDialog):
@@ -356,6 +357,7 @@ class MainWindow(QMainWindow):
         tm = self.menuBar().addMenu("&Tools")
         self.free_auto_act = tm.addAction("Refresh free configs once a day (on start)")
         self.free_auto_act.setCheckable(True)
+        tm.addAction("Telegram proxy (my Cloudflare Worker) ...", lambda: self.telegram_proxy())
         hm = self.menuBar().addMenu("&Help")
         hm.addAction("&Guide / راهنما", lambda: HelpDialog(self).exec())
         hm.addAction("&About NetBridge", lambda: AboutDialog(self).exec())
@@ -449,6 +451,7 @@ class MainWindow(QMainWindow):
             self.psi_region.addItem(label, cc)
         self.psi_region.setToolTip("Exit country for Psiphon (Auto = Psiphon decides).")
         r8.addWidget(self.psi_region)
+        self.tg_btn = QPushButton("Telegram proxy"); self.tg_btn.clicked.connect(self.telegram_proxy); r8.addWidget(self.tg_btn)
         ll.addLayout(r_auto); ll.addLayout(r3); ll.addLayout(r4); ll.addLayout(r5); ll.addLayout(r6); ll.addLayout(r7); ll.addLayout(r8)
         splitter.addWidget(left)
 
@@ -922,6 +925,10 @@ class MainWindow(QMainWindow):
         self.log.append(f"Free configs from {mirror}")
         self._report(*self._add_profiles(profiles, src["group"]), errors)
         self.log.append("Press AUTO to test them and connect to the best one.")
+
+    # ---------- Telegram web proxy on the user's own Cloudflare account ----------
+    def telegram_proxy(self):
+        TgProxyDialog(self, self.proxy_url_for_download()).exec()
 
     # ---------- Google Script relay ----------
     def google_script(self):

@@ -31,10 +31,14 @@ def random_name(prefix="nb"):
     return f"{prefix}-{secrets.token_hex(4)}"
 
 
-def multipart(source):
-    """(body, content_type) for the module upload: a JSON 'metadata' part plus the 'worker.js' module."""
+def multipart(source, bindings=None):
+    """(body, content_type) for the module upload: a JSON 'metadata' part plus the 'worker.js' module.
+    bindings: optional list such as [{"type": "secret_text", "name": "SECRET", "text": "..."}]."""
     b = "----nb" + secrets.token_hex(12)
-    meta = json.dumps({"main_module": "worker.js", "compatibility_date": COMPAT_DATE})
+    md = {"main_module": "worker.js", "compatibility_date": COMPAT_DATE}
+    if bindings:
+        md["bindings"] = list(bindings)
+    meta = json.dumps(md)
     parts = [f'--{b}\r\nContent-Disposition: form-data; name="metadata"\r\nContent-Type: application/json\r\n\r\n{meta}\r\n',
              f'--{b}\r\nContent-Disposition: form-data; name="worker.js"; filename="worker.js"\r\n'
              f'Content-Type: application/javascript+module\r\n\r\n{source}\r\n', f'--{b}--\r\n']
