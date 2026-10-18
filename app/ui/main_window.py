@@ -48,6 +48,7 @@ from app.ui.about_dialog import AboutDialog
 from app.ui.help_dialog import HelpDialog
 from app.ui.gscript_dialog import GScriptDialog
 from app.ui.tg_dialog import TgProxyDialog
+from app.ui import tor_bridges_dialog
 
 
 class ImportDialog(QDialog):
@@ -370,6 +371,7 @@ class MainWindow(QMainWindow):
         self.view = []; self.worker = None; self.auto_worker = None; self._auto_wins = []; self.pending_best = False; self._done = 0; self._total = 0
         self.xray = XrayManager()
         self.aether = aether_mod.AetherManager()
+        self.aether.bridges, self.aether.bridges_now = tor_bridges_dialog.load()
         self.gscript = None                                      # running Google Script relay (local SOCKS5 port) or None
         self.socks_port, self.http_port = ports.SOCKS, ports.HTTP
         self.active_config = Path("configs/active.json")
@@ -440,6 +442,7 @@ class MainWindow(QMainWindow):
         r7.addWidget(self.gs_btn)
         self.tor_btn = QPushButton("Tor via WARP"); self.tor_btn.clicked.connect(lambda: self.warp_aether("tor")); r7.addWidget(self.tor_btn)
         self.toronly_btn = QPushButton("Tor alone (bridges)"); self.toronly_btn.clicked.connect(lambda: self.warp_aether("tor-only")); r7.addWidget(self.toronly_btn)
+        self.torbr_btn = QPushButton("Tor bridges..."); self.torbr_btn.clicked.connect(self.tor_bridges); r7.addWidget(self.torbr_btn)
         self.free_btn = QPushButton("Get free configs"); self.free_btn.setObjectName("primary"); self.free_btn.clicked.connect(self.get_free_configs)
         r7.addWidget(self.free_btn)
         b = QPushButton("Help / راهنما"); b.clicked.connect(lambda: HelpDialog(self).exec()); r7.addWidget(b)
@@ -821,6 +824,13 @@ class MainWindow(QMainWindow):
     def _style_connect(self, connected):
         """Blue while not connected, green once connected (green is the colour people expect for 'connected')."""
         self.connect_btn.setStyleSheet(theme.big_button(theme.GRAD_GREEN if connected else theme.GRAD_BLUE, radius=12, size=16))
+
+    def tor_bridges(self):
+        dlg = tor_bridges_dialog.TorBridgesDialog(self)
+        if dlg.exec():
+            self.aether.bridges, self.aether.bridges_now = dlg.result_bridges, dlg.result_now
+            self.log.append(f"Tor bridges: {len(dlg.result_bridges)} of your own saved" if dlg.result_bridges
+                            else "Tor bridges: none saved - Aether finds bridges by itself.")
 
     # ---------- WARP through the Aether core ----------
     def warp_aether(self, kind="warp"):

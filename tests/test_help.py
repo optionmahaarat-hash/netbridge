@@ -14,5 +14,5 @@ def test_help_has_every_feature_and_google_steps():
 
 
 def test_ui_files_compile():
-    for f in ("app/ui/main_window.py", "app/ui/gscript_dialog.py", "app/ui/tg_dialog.py", "app/ui/help_dialog.py"):
+    for f in ("app/ui/main_window.py", "app/ui/gscript_dialog.py", "app/ui/tg_dialog.py", "app/ui/tor_bridges_dialog.py", "app/ui/help_dialog.py"):
         py_compile.compile(f, doraise=True)
