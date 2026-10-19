@@ -89,7 +89,8 @@ TOPICS = [
 <li><b>Psiphon alone</b>: فقط Psiphon.</li>
 </ul>
 <p>لیست کنار دکمه، کشور خروجی را مشخص می‌کند (Auto = خود Psiphon انتخاب می‌کند؛ همه کشورها همیشه موجود نیستند). شروع اول ممکن است چند دقیقه طول بکشد.
-اگر پیام «Psiphon پیدا نشد» آمد، هسته Aether را دوباره دانلود کن (پوشه cores/aether را پاک کن و دکمه را بزن).</p>"""),
+اگر پیام «Psiphon پیدا نشد» آمد، هسته Aether را دوباره دانلود کن (پوشه cores/aether را پاک کن و دکمه را بزن).</p>
+<p><b>اگر Psiphon یا Tor تنها بالا نمی‌آید</b> (در لاگ: «tactics request failed» یا «meek round trip failed»)، شبکه راه شروع آن‌ها را بسته است. راه‌حل: اول به یک پروفایل معمولی که کار می‌کند وصل شو (نه Aether)، بعد تیک «Aether through my current connection» را بزن و دکمه Psiphon یا Tor را بزن. Aether از همان اتصال عبور می‌کند. بعد از بالا آمدن، اتصال به Aether جابه‌جا می‌شود.</p>"""),
     ("bypass", "روش‌های عبور (Bypass)", """
 <h3>Bypass</h3>
 <p>fragment و finalMask و cipherها روش‌هایی برای دور زدن DPI هستند. AUTO آن‌ها را خودش می‌آزماید.

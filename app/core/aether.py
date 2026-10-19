@@ -203,7 +203,7 @@ def parse_bridges(text):
 
 
 def build_args(exe, port=DEFAULT_PORT, mode="h3", config=None, protocol="masque", tor=None, tor_port=None, tor_dir=None, family="4",
-               psiphon=None, psiphon_port=None, psiphon_dir=None, region=None, bridge_file=None, bridges_now=False):
+               psiphon=None, psiphon_port=None, psiphon_dir=None, region=None, bridge_file=None, bridges_now=False, upstream=None):
     """Command line. Every choice is given as a flag, because a flag suppresses that question (Aether asks interactively otherwise).
     family: which gateway addresses to scan: "4" (IPv4), "6" (IPv6) or "dual". Some networks only let IPv6 through.
     mode: "h3" = MASQUE over HTTP/3 (default), "h2" = MASQUE over HTTP/2 with ClientHello fragmentation (when UDP/QUIC is blocked).
@@ -247,6 +247,10 @@ def build_args(exe, port=DEFAULT_PORT, mode="h3", config=None, protocol="masque"
             args += ["--psiphon-dir", str(psiphon_dir)]
         if region:
             args += ["--psiphon-region", region.upper()]
+    if upstream:
+        if not re.match(r"^(socks5|http)://[\w.\-\[\]:%@]+:\d{1,5}$", upstream):
+            raise ValueError("upstream must look like socks5://127.0.0.1:1080")
+        args += ["--upstream", upstream]
     if config:
         args += ["--config", str(config)]
     return args
@@ -296,6 +300,7 @@ class AetherManager:
         self.port = None
         self.kind = None                      # one of MODES: what is running
         self.bridges = []                     # the user's own Tor bridge lines (see parse_bridges); empty = Aether fetches its own
+        self.upstream = None                  # socks5://127.0.0.1:port of a connection that already works: Aether dials through it
         self.bridges_now = False              # go to bridges at once instead of trying plain Tor first
         self._lines = []
         self._lock = threading.Lock()
@@ -323,7 +328,7 @@ class AetherManager:
         args = build_args(self.executable, port, mode, config=self.data_dir / "aether.toml", tor=tor, tor_port=tor_port,
                           tor_dir=self.data_dir / "tor", protocol=protocol, family=family,
                           psiphon=psiphon, psiphon_port=psiphon_port, psiphon_dir=self.data_dir / "psiphon", region=region,
-                          bridge_file=bridge_file, bridges_now=bool(self.bridges_now and tor))
+                          bridge_file=bridge_file, bridges_now=bool(self.bridges_now and tor), upstream=self.upstream)
         env = None
         if getattr(self, "proxy_env", None):                     # registration (api.cloudflareclient.com) is filtered on some networks:
             env = dict(os.environ)                               # hand the running NetBridge proxy to Aether in case it honours these
