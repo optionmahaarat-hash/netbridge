@@ -68,6 +68,19 @@ def call(method, path, token, body=None, content_type="application/json", timeou
     return js.get("result")
 
 
+def ensure_subdomain(call, acc, token):
+    """The account's workers.dev subdomain; creates one when there is none. Cloudflare answers the GET with an ERROR (not an empty
+    value) on an account that never opened Workers, so that error means 'create it' and is not fatal."""
+    try:
+        sub = (call("GET", f"/accounts/{acc}/workers/subdomain", token) or {}).get("subdomain")
+    except DeployError:
+        sub = None
+    if not sub:
+        sub = f"nb-{secrets.token_hex(4)}"
+        call("PUT", f"/accounts/{acc}/workers/subdomain", token, {"subdomain": sub})
+    return sub
+
+
 def deploy(token, name=None, uuid_str=None, call=call, progress=lambda s: None):
     """Creates the worker and turns on its workers.dev address. Returns a NetBridge profile dict.
     `call(method, path, token, body=None, content_type=...)` is replaceable for tests."""
@@ -88,10 +101,7 @@ def deploy(token, name=None, uuid_str=None, call=call, progress=lambda s: None):
     body, ctype = multipart(worker_source(uuid_str))
     call("PUT", f"/accounts/{acc}/workers/scripts/{name}", token, body, ctype, timeout=60)
     progress("Turning on the workers.dev address ...")
-    sub = (call("GET", f"/accounts/{acc}/workers/subdomain", token) or {}).get("subdomain")
-    if not sub:
-        sub = f"nb-{secrets.token_hex(4)}"
-        call("PUT", f"/accounts/{acc}/workers/subdomain", token, {"subdomain": sub})
+    sub = ensure_subdomain(call, acc, token)
     call("POST", f"/accounts/{acc}/workers/scripts/{name}/subdomain", token, {"enabled": True, "previews_enabled": False})
     host = f"{name}.{sub}.workers.dev"
     return {"type": "vless", "name": f"Mine - {name}", "server": host, "port": 443, "network": "ws", "uuid": uuid_str,

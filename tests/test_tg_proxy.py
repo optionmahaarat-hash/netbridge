@@ -134,3 +134,15 @@ def test_health_parsing(monkeypatch):
     assert tg_proxy.health("x.example.com")[0] is True
     monkeypatch.setattr(tg_proxy.urllib.request, "build_opener", lambda *h: O(b"nope"))
     assert tg_proxy.health("x.example.com")[0] is False
+
+
+def test_ensure_subdomain_creates_one_when_cloudflare_errors_on_get():
+    from app.core import cf_deploy
+    calls = []
+    def call(method, path, token, *a, **k):
+        calls.append((method, path))
+        if method == "GET":
+            raise DeployError("You do not have a workers.dev subdomain.")
+        return {}
+    sub = cf_deploy.ensure_subdomain(call, "acc1", "tok")
+    assert sub.startswith("nb-") and calls[-1][0] == "PUT"

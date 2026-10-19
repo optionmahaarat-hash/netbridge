@@ -103,10 +103,7 @@ def deploy(token, source, zone=None, label="tg", name=None, call=cf_deploy.call,
                                               {"type": "secret_text", "name": "BOOT", "text": boot}])
     call("PUT", f"/accounts/{acc}/workers/scripts/{name}", token, body, ctype, timeout=60)
     progress("Turning on the workers.dev address ...")
-    sub = (call("GET", f"/accounts/{acc}/workers/subdomain", token) or {}).get("subdomain")
-    if not sub:
-        sub = f"nb-{secrets.token_hex(4)}"
-        call("PUT", f"/accounts/{acc}/workers/subdomain", token, {"subdomain": sub})
+    sub = cf_deploy.ensure_subdomain(call, acc, token)
     call("POST", f"/accounts/{acc}/workers/scripts/{name}/subdomain", token, {"enabled": True, "previews_enabled": False})
     workers_host = f"{name}.{sub}.workers.dev"
     domain = None
