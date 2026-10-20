@@ -458,6 +458,7 @@ class MainWindow(QMainWindow):
         r8.addWidget(self.psi_region)
         self.tg_btn = QPushButton("Telegram proxy"); self.tg_btn.clicked.connect(self.telegram_proxy); r8.addWidget(self.tg_btn)
         self.via_chk = QCheckBox("Aether through my current connection")
+        self.via_chk.setChecked(True)          # default on: used only when a normal connection is already running
         self.via_chk.setToolTip("When Psiphon / Tor / WARP cannot start on their own, connect to a profile that works first, tick this and press the Aether button: "
                                 "Aether then dials through that connection.")
         r8.addWidget(self.via_chk)
@@ -886,12 +887,14 @@ class MainWindow(QMainWindow):
                     "checked with its SHA-256 and kept in cores/aether/. Continue?") != QMessageBox.Yes:
                 return
         self.aether.upstream = None
-        if self.via_chk.isChecked():
+        if self.via_chk.isChecked() and self.xray.running and not self.aether.running:
             port = self.start_feeder()
             if not port:
                 return
             self.aether.upstream = feeder_mod.upstream_url(port)
             self.log.append(f"Aether will dial through your current connection ({self.aether.upstream}).")
+        elif self.via_chk.isChecked():
+            self.log.append("No normal connection is running, so Aether starts directly (connect AUTO first if it cannot start).")
         self.log.append(f"Aether ({kind}): starting - the buttons stay active; press one again to cancel.")
         proto, fam = self.warp_mode.currentData() if kind == "warp" else ("masque", "4")
         self.aetherw = AetherWorker(self.aether, self.proxy_url_for_download(), kind, self, protocol=proto, family=fam,
