@@ -4,7 +4,7 @@ from PySide6.QtCore import QTimer, QThread, Signal
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QPushButton,
     QLabel, QTextEdit, QLineEdit, QMessageBox, QDialog, QFormLayout,
-    QDialogButtonBox, QFileDialog, QSplitter, QComboBox, QCheckBox, QInputDialog, QAbstractItemView
+    QDialogButtonBox, QFileDialog, QSplitter, QComboBox, QCheckBox, QInputDialog, QAbstractItemView, QScrollArea, QFrame, QApplication
 )
 import json
 import html
@@ -47,6 +47,9 @@ from app.ui.icon import app_icon, logo_pixmap
 from app.ui.about_dialog import AboutDialog
 from app.ui.help_dialog import HelpDialog
 from app.ui.gscript_dialog import GScriptDialog
+from app.ui.tg_dialog import TgProxyDialog
+from app.ui import tor_bridges_dialog
+from app.core import feeder as feeder_mod
 
 
 class ImportDialog(QDialog):
@@ -208,6 +211,7 @@ class AetherWorker(QThread):
             if not aether_mod.installed():
                 path, tag = aether_mod.download_core(proxy=self.proxy, progress=self.status.emit)
                 self.status.emit(f"Aether {tag} installed: {path}")
+            self.mgr.proxy_env = self.proxy
             port = self.mgr.start(cancelled=lambda: self._stop, progress=self.status.emit, kind=self.kind,
                                  protocol=self.protocol, family=self.family, region=self.region)
             self.done.emit(port)
@@ -233,8 +237,12 @@ class RoutingDialog(QDialog):
     def __init__(self, r, profiles=(), parent=None):
         super().__init__(parent)
         self.setWindowTitle("Routing - skip the tunnel for some sites")
-        self.resize(680, 760)
-        lay = QVBoxLayout(self)
+        outer = QVBoxLayout(self)                      # the form scrolls, the OK / Cancel buttons stay visible on small screens
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame)
+        body = QWidget(); scroll.setWidget(body); outer.addWidget(scroll)
+        lay = QVBoxLayout(body)
+        scr = QApplication.primaryScreen()
+        self.resize(680, min(760, int(scr.availableGeometry().height() * 0.9)) if scr else 700)
         self.iran = QCheckBox("Iranian sites go direct (.ir + Iranian site list) - they reject foreign IPs")
         self.iran.setChecked(bool(r.get("iran")))
         self.lan = QCheckBox("Local network / private IPs go direct")
@@ -277,7 +285,7 @@ class RoutingDialog(QDialog):
         lay.addWidget(self.proxy)
         lay.addWidget(QLabel("A site name also covers its subdomains. Applies on the next connect (auto-reconnects if connected)."))
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.accepted.connect(self.accept); bb.rejected.connect(self.reject); lay.addWidget(bb)
+        bb.accepted.connect(self.accept); bb.rejected.connect(self.reject); outer.addWidget(bb)
 
     def add_preset(self):
         have = {x.strip() for x in self.pin_sites.toPlainText().splitlines() if x.strip()}
@@ -351,6 +359,7 @@ class MainWindow(QMainWindow):
         tm = self.menuBar().addMenu("&Tools")
         self.free_auto_act = tm.addAction("Refresh free configs once a day (on start)")
         self.free_auto_act.setCheckable(True)
+        tm.addAction("Telegram proxy (my Cloudflare Worker) ...", lambda: self.telegram_proxy())
         hm = self.menuBar().addMenu("&Help")
         hm.addAction("&Guide / راهنما", lambda: HelpDialog(self).exec())
         hm.addAction("&About NetBridge", lambda: AboutDialog(self).exec())
@@ -362,7 +371,9 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(4000, self._free_auto_check)
         self.view = []; self.worker = None; self.auto_worker = None; self._auto_wins = []; self.pending_best = False; self._done = 0; self._total = 0
         self.xray = XrayManager()
+        self.feeder = XrayManager()               # hidden second Xray: keeps the working route for Aether (see core/feeder.py)
         self.aether = aether_mod.AetherManager()
+        self.aether.bridges, self.aether.bridges_now = tor_bridges_dialog.load()
         self.gscript = None                                      # running Google Script relay (local SOCKS5 port) or None
         self.socks_port, self.http_port = ports.SOCKS, ports.HTTP
         self.active_config = Path("configs/active.json")
@@ -433,6 +444,7 @@ class MainWindow(QMainWindow):
         r7.addWidget(self.gs_btn)
         self.tor_btn = QPushButton("Tor via WARP"); self.tor_btn.clicked.connect(lambda: self.warp_aether("tor")); r7.addWidget(self.tor_btn)
         self.toronly_btn = QPushButton("Tor alone (bridges)"); self.toronly_btn.clicked.connect(lambda: self.warp_aether("tor-only")); r7.addWidget(self.toronly_btn)
+        self.torbr_btn = QPushButton("Tor bridges..."); self.torbr_btn.clicked.connect(self.tor_bridges); r7.addWidget(self.torbr_btn)
         self.free_btn = QPushButton("Get free configs"); self.free_btn.setObjectName("primary"); self.free_btn.clicked.connect(self.get_free_configs)
         r7.addWidget(self.free_btn)
         b = QPushButton("Help / راهنما"); b.clicked.connect(lambda: HelpDialog(self).exec()); r7.addWidget(b)
@@ -444,6 +456,12 @@ class MainWindow(QMainWindow):
             self.psi_region.addItem(label, cc)
         self.psi_region.setToolTip("Exit country for Psiphon (Auto = Psiphon decides).")
         r8.addWidget(self.psi_region)
+        self.tg_btn = QPushButton("Telegram proxy"); self.tg_btn.clicked.connect(self.telegram_proxy); r8.addWidget(self.tg_btn)
+        self.via_chk = QCheckBox("Aether through my current connection")
+        self.via_chk.setChecked(True)          # default on: used only when a normal connection is already running
+        self.via_chk.setToolTip("When Psiphon / Tor / WARP cannot start on their own, connect to a profile that works first, tick this and press the Aether button: "
+                                "Aether then dials through that connection.")
+        r8.addWidget(self.via_chk)
         ll.addLayout(r_auto); ll.addLayout(r3); ll.addLayout(r4); ll.addLayout(r5); ll.addLayout(r6); ll.addLayout(r7); ll.addLayout(r8)
         splitter.addWidget(left)
 
@@ -814,10 +832,43 @@ class MainWindow(QMainWindow):
         """Blue while not connected, green once connected (green is the colour people expect for 'connected')."""
         self.connect_btn.setStyleSheet(theme.big_button(theme.GRAD_GREEN if connected else theme.GRAD_BLUE, radius=12, size=16))
 
+    def start_feeder(self):
+        """Starts the hidden Xray copy of the active connection; returns its SOCKS port or None (with a message shown)."""
+        if not self.xray.running or self.aether.running:
+            QMessageBox.information(self, "Aether", "First connect to a normal profile that works (not an Aether / Tor / Psiphon one), then tick this "
+                                    "box and press the Aether button again.")
+            return None
+        try:
+            self.feeder.stop()
+            sp = aether_mod.free_port(1900)
+            hp = aether_mod.free_port(sp + 1)
+            feeder_mod.make_feeder_config(self.active_config, Path("configs/feeder.json"), sp, hp)
+            self.feeder.start(Path("configs/feeder.json"))
+            for _ in range(40):
+                if aether_mod.socks_ready(sp):
+                    return sp
+                time.sleep(0.25)
+            raise RuntimeError("the helper connection did not start")
+        except Exception as e:
+            self.feeder.stop()
+            QMessageBox.warning(self, "Aether", f"Could not keep the current connection for Aether: {e}")
+            return None
+
+    def tor_bridges(self):
+        dlg = tor_bridges_dialog.TorBridgesDialog(self)
+        if dlg.exec():
+            self.aether.bridges, self.aether.bridges_now = dlg.result_bridges, dlg.result_now
+            self.log.append(f"Tor bridges: {len(dlg.result_bridges)} of your own saved" if dlg.result_bridges
+                            else "Tor bridges: none saved - Aether finds bridges by itself.")
+
     # ---------- WARP through the Aether core ----------
     def warp_aether(self, kind="warp"):
         """kind: "warp", "tor" (Tor carried inside WARP) or "tor-only" (plain Tor, bridges when blocked)."""
         if getattr(self, "aetherw", None) and self.aetherw.isRunning():
+            if QMessageBox.question(self, "Aether", "Aether is still starting (Tor / Psiphon can take a few minutes).\n\n"
+                                    "Cancel it?") == QMessageBox.Yes:
+                self.aetherw.stop()
+                self.log.append("Aether: cancelling ...")
             return
         if kind in ("tor", "tor-only") and QMessageBox.question(self, "Tor (Aether)",
                 "Tor is slow and meant for light browsing; the first start downloads Tor's directory and can take several minutes.\n"
@@ -835,8 +886,16 @@ class MainWindow(QMainWindow):
                     "It is not part of NetBridge. It will be downloaded now from its official GitHub releases (about 20 MB), "
                     "checked with its SHA-256 and kept in cores/aether/. Continue?") != QMessageBox.Yes:
                 return
-        for b in (self.warp_btn, self.tor_btn, self.toronly_btn, self.psi_btn, self.psionly_btn):
-            b.setEnabled(False)
+        self.aether.upstream = None
+        if self.via_chk.isChecked() and self.xray.running and not self.aether.running:
+            port = self.start_feeder()
+            if not port:
+                return
+            self.aether.upstream = feeder_mod.upstream_url(port)
+            self.log.append(f"Aether will dial through your current connection ({self.aether.upstream}).")
+        elif self.via_chk.isChecked():
+            self.log.append("No normal connection is running, so Aether starts directly (connect AUTO first if it cannot start).")
+        self.log.append(f"Aether ({kind}): starting - the buttons stay active; press one again to cancel.")
         proto, fam = self.warp_mode.currentData() if kind == "warp" else ("masque", "4")
         self.aetherw = AetherWorker(self.aether, self.proxy_url_for_download(), kind, self, protocol=proto, family=fam,
                                   region=(self.psi_region.currentData() or None) if kind.startswith("psiphon") else None)
@@ -915,6 +974,10 @@ class MainWindow(QMainWindow):
         self._report(*self._add_profiles(profiles, src["group"]), errors)
         self.log.append("Press AUTO to test them and connect to the best one.")
 
+    # ---------- Telegram web proxy on the user's own Cloudflare account ----------
+    def telegram_proxy(self):
+        TgProxyDialog(self, self.proxy_url_for_download()).exec()
+
     # ---------- Google Script relay ----------
     def google_script(self):
         dlg = GScriptDialog(self, self.gscript)
@@ -939,6 +1002,9 @@ class MainWindow(QMainWindow):
             b.setEnabled(True)
         kind = getattr(self, "_aether_kind", "warp")
         if not isinstance(result, int):
+            if str(result) == "cancelled":
+                self.log.append("Aether: cancelled."); return
+            self.feeder.stop()
             QMessageBox.warning(self, "Aether", str(result)); return
         p = next((q for q in self.profiles if aether_mod.needs_kind(q) == kind), None)
         if p is None:
@@ -951,7 +1017,7 @@ class MainWindow(QMainWindow):
         self.connect_(profile=p)
 
     def disconnect_(self):
-        self.aether.stop()
+        self.aether.stop(); self.feeder.stop()
         self.xray.stop(); self.timer.stop(); self._proxy(False)
         self.connect_btn.setText("CONNECT"); self._style_connect(False); self.status.setText("Status: Disconnected")
         self.log.append("Xray stopped.")
@@ -1268,6 +1334,6 @@ class MainWindow(QMainWindow):
         w = getattr(self, "aetherw", None)
         if w is not None and w.isRunning():
             w.stop(); w.wait(8000)
-        self.aether.stop()
+        self.aether.stop(); self.feeder.stop()
         if self.gscript: self.gscript.stop()
         self.xray.stop(); self._proxy(False); save_profiles(self.profiles); e.accept()

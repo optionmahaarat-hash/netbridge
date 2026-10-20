@@ -72,6 +72,8 @@ def sites_ms(results):
 # ---- upload check: some channels pass small downloads but stall after ~6 upstream packets (PattNG report).
 # A page that needs a request body (login, form, any POST) then hangs. A 16-byte GET never notices.
 UPLOAD_URL = "https://speed.cloudflare.com/__up"
+# A second, unrelated host: if one is slow or blocked it must not make every profile look upload-limited.
+UPLOAD_URLS = (UPLOAD_URL, "https://www.google.com/gen_204")
 UPLOAD_BYTES = 50_000
 
 
@@ -93,8 +95,11 @@ def _post(proxy, url, timeout, size=UPLOAD_BYTES):
 
 def check_upload(proxy, timeout=10, url=None, size=UPLOAD_BYTES, post=_post):
     """(ok, ms, detail). ok=False means the upload stalled or failed: the profile is 'upload-limited'."""
-    try:
-        ms = post(proxy, url or UPLOAD_URL, timeout, size)
-        return True, ms, f"uploaded {size // 1000} KB"
-    except Exception as e:
-        return False, -1, str(e)[:80] or type(e).__name__
+    err = "no url"
+    for u in ((url,) if url else UPLOAD_URLS):
+        try:
+            ms = post(proxy, u, timeout, size)
+            return True, ms, f"uploaded {size // 1000} KB"
+        except Exception as e:
+            err = str(e)[:80] or type(e).__name__
+    return False, -1, err

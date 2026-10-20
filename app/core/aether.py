@@ -177,8 +177,33 @@ ONLY_KINDS = ("tor-only", "psiphon-only")                            # these hav
 REGION_RE = re.compile(r"^[A-Za-z]{2}$")
 
 
+BRIDGE_TRANSPORTS = ("obfs4", "snowflake", "meek", "meek_lite", "webtunnel", "scramblesuit", "conjure")
+_IPPORT = r"(?:\[[0-9a-fA-F:]+\]|[0-9.]+):\d{1,5}"
+
+
+def parse_bridges(text):
+    """Cleans pasted Tor bridge lines (from bridges.torproject.org, the email bot or Telegram bot): drops blanks, '#' comments and a
+    leading 'Bridge '. A line must start with a known transport (obfs4, snowflake, webtunnel ...) or be a plain 'IP:port [FINGERPRINT]'.
+    Returns (good_lines, bad_lines); duplicates are removed."""
+    good, bad = [], []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.lower().startswith("bridge "):
+            line = line[7:].strip()
+        head = line.split(None, 1)[0].lower()
+        ok = (head in BRIDGE_TRANSPORTS and len(line.split()) >= 2) or re.match(r"^" + _IPPORT + r"(\s+[0-9A-Fa-f]{40})?$", line)
+        if ok:
+            if line not in good:
+                good.append(line)
+        else:
+            bad.append(raw.strip())
+    return good, bad
+
+
 def build_args(exe, port=DEFAULT_PORT, mode="h3", config=None, protocol="masque", tor=None, tor_port=None, tor_dir=None, family="4",
-               psiphon=None, psiphon_port=None, psiphon_dir=None, region=None):
+               psiphon=None, psiphon_port=None, psiphon_dir=None, region=None, bridge_file=None, bridges_now=False, upstream=None):
     """Command line. Every choice is given as a flag, because a flag suppresses that question (Aether asks interactively otherwise).
     family: which gateway addresses to scan: "4" (IPv4), "6" (IPv6) or "dual". Some networks only let IPv6 through.
     mode: "h3" = MASQUE over HTTP/3 (default), "h2" = MASQUE over HTTP/2 with ClientHello fragmentation (when UDP/QUIC is blocked).
@@ -213,11 +238,19 @@ def build_args(exe, port=DEFAULT_PORT, mode="h3", config=None, protocol="masque"
             args += ["--psiphon", "--psiphon-bind", f"127.0.0.1:{int(psiphon_port or port + 1)}"]
     if tor and tor_dir:
         args += ["--tor-dir", str(tor_dir)]
+    if tor and bridge_file:
+        args += ["--tor-bridge-file", str(bridge_file)]
+    if tor and bridges_now:
+        args += ["--tor-bridges"]
     if psiphon:
         if psiphon_dir:
             args += ["--psiphon-dir", str(psiphon_dir)]
         if region:
             args += ["--psiphon-region", region.upper()]
+    if upstream:
+        if not re.match(r"^(socks5|http)://[\w.\-\[\]:%@]+:\d{1,5}$", upstream):
+            raise ValueError("upstream must look like socks5://127.0.0.1:1080")
+        args += ["--upstream", upstream]
     if config:
         args += ["--config", str(config)]
     return args
@@ -230,6 +263,23 @@ def socks_ready(port, timeout=1.0):
             s.settimeout(timeout)
             s.sendall(b"\x05\x01\x00")
             return s.recv(2) == b"\x05\x00"
+    except OSError:
+        return False
+
+
+def socks_tunnel_ok(port, host="www.google.com", dport=443, timeout=8.0):
+    """True when a SOCKS5 CONNECT through 127.0.0.1:port really reaches `host`. Tor and Psiphon open their local SOCKS port
+    long before their tunnel is up, so 'it answers the greeting' is not enough: this proves traffic goes out."""
+    try:
+        with socket.create_connection(("127.0.0.1", int(port)), timeout=timeout) as s:
+            s.settimeout(timeout)
+            s.sendall(b"\x05\x01\x00")
+            if s.recv(2) != b"\x05\x00":
+                return False
+            name = host.encode()
+            s.sendall(b"\x05\x01\x00\x03" + bytes([len(name)]) + name + dport.to_bytes(2, "big"))
+            rep = s.recv(4)
+            return len(rep) >= 2 and rep[1] == 0
     except OSError:
         return False
 
@@ -249,6 +299,9 @@ class AetherManager:
         self.process = None
         self.port = None
         self.kind = None                      # one of MODES: what is running
+        self.bridges = []                     # the user's own Tor bridge lines (see parse_bridges); empty = Aether fetches its own
+        self.upstream = None                  # socks5://127.0.0.1:port of a connection that already works: Aether dials through it
+        self.bridges_now = False              # go to bridges at once instead of trying plain Tor first
         self._lines = []
         self._lock = threading.Lock()
 
@@ -268,10 +321,20 @@ class AetherManager:
 
     def _launch(self, port, mode, tor=None, tor_port=None, protocol="masque", family="4", psiphon=None, psiphon_port=None, region=None):
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        bridge_file = None
+        if tor and self.bridges:
+            bridge_file = self.data_dir / "tor_bridges.txt"
+            bridge_file.write_text("\n".join(self.bridges) + "\n", encoding="utf-8")
         args = build_args(self.executable, port, mode, config=self.data_dir / "aether.toml", tor=tor, tor_port=tor_port,
                           tor_dir=self.data_dir / "tor", protocol=protocol, family=family,
-                          psiphon=psiphon, psiphon_port=psiphon_port, psiphon_dir=self.data_dir / "psiphon", region=region)
-        self.process = subprocess.Popen(args, cwd=str(self.data_dir), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                          psiphon=psiphon, psiphon_port=psiphon_port, psiphon_dir=self.data_dir / "psiphon", region=region,
+                          bridge_file=bridge_file, bridges_now=bool(self.bridges_now and tor), upstream=self.upstream)
+        env = None
+        if getattr(self, "proxy_env", None):                     # registration (api.cloudflareclient.com) is filtered on some networks:
+            env = dict(os.environ)                               # hand the running NetBridge proxy to Aether in case it honours these
+            for k in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
+                env[k] = self.proxy_env
+        self.process = subprocess.Popen(args, cwd=str(self.data_dir), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, env=env,
                                         stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", creationflags=NOWIN)
         threading.Thread(target=self._pump, args=(self.process,), daemon=True).start()
 
@@ -288,7 +351,7 @@ class AetherManager:
         side_port = free_port(port + 1) if kind in SIDE_KINDS else None
         use = side_port if kind in SIDE_KINDS else port
         if kind != "warp":
-            wait = max(wait, 240)                                   # Tor downloads its directory first; bridges can take longer still
+            wait = max(wait, 420 if kind in ONLY_KINDS else 240)                                   # Tor downloads its directory first; bridges can take longer still
         for mode in (modes if kind not in ONLY_KINDS and (protocol == "masque" or kind in SIDE_KINDS) else ("h3",)):
             what = {"warp": (f"MASQUE {'HTTP/3' if mode == 'h3' else 'HTTP/2 + fragment'}" if protocol == "masque"
                              else {"wg": "WireGuard", "gool": "WARP-in-WARP (gool)"}.get(protocol, protocol)) + f", IPv{family}",
@@ -298,13 +361,17 @@ class AetherManager:
             self._launch(port, mode, tor=kind if kind.startswith("tor") else None, tor_port=side_port if kind == "tor" else None,
                          protocol=protocol, family=family, psiphon=kind if kind.startswith("psiphon") else None,
                          psiphon_port=side_port if kind == "psiphon" else None, region=region)
+            proc = self.process
             end = time.time() + wait
+            check = ready if (ready is not socks_ready or kind == "warp") else socks_tunnel_ok
             while time.time() < end:
                 if cancelled():
                     self.stop(); raise AetherError("cancelled")
-                if self.process.poll() is not None:
+                if self.process is not proc:                     # Disconnect / another connect stopped it while it was starting
+                    raise AetherError("cancelled")
+                if proc.poll() is not None:
                     break
-                if ready(use):
+                if check(use):
                     self.port, self.kind = use, kind
                     return use
                 sleep(0.5)

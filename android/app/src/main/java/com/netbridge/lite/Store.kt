@@ -21,6 +21,9 @@ class Store(private val ctx: Context) {
     var freeLast: Long
         get() = sp.getLong("free_last", 0L)
         set(v) { sp.edit().putLong("free_last", v).apply() }
+    var tgLink: String                                              // last Telegram proxy link (no token, no Cloudflare secret)
+        get() = sp.getString("tg_link", "") ?: ""
+        set(v) { sp.edit().putString("tg_link", v).apply() }
     var selected: String
         get() = sp.getString("selected", "auto") ?: "auto"
         set(v) { sp.edit().putString("selected", v).apply() }
