@@ -6,7 +6,8 @@ from app.ui.icon import app_icon
 from app.ui.main_window import MainWindow
 
 if __name__ == "__main__":
-    os.chdir(Path(__file__).resolve().parent)     # data/, configs/ and cores/ are relative: works from any start folder
+    # data/, configs/ and cores/ are relative to the program folder (the .exe folder when installed): works from any start folder
+    os.chdir(Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent)
     if sys.platform == "win32":
         try:   # own identity: the taskbar shows the NetBridge icon (and groups windows) instead of python's
             import ctypes
