@@ -288,6 +288,7 @@ private fun SettingsSheet(vm: Vm, ui: Ui, toast: (String) -> Unit) {
     var freeBusy by remember { mutableStateOf(false) }
     val freeOk = t("free_ok"); val freeFail = t("free_fail")
     var askToken by remember { mutableStateOf(false) }
+    var askTg by remember { mutableStateOf(false) }
     var token by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf("") }
@@ -321,6 +322,7 @@ private fun SettingsSheet(vm: Vm, ui: Ui, toast: (String) -> Unit) {
         Divider2()
         Action(if (freeBusy) t("free_busy") else t("free"), NB.Gold) { if (!freeBusy) askFree = true }
         Action(if (busy) t("deploy_busy") else t("deploy"), NB.Gold) { if (!busy) askToken = true }
+        Action(t("tg"), NB.Gold) { askTg = true }
         Action(t("report"), NB.Text) { clipboard.setText(AnnotatedString(vm.report())); toast(cp) }
         Action(t("delete_all"), NB.Err) { confirm = true }
         Spacer(Modifier.height(10.dp))
@@ -341,6 +343,7 @@ private fun SettingsSheet(vm: Vm, ui: Ui, toast: (String) -> Unit) {
             vm.getFreeConfigs { ok, text -> freeBusy = false; result = if (ok) "$text $freeOk" else "$freeFail\n$text" }
         }) { Text(t("yes"), color = NB.Gold) } },
         dismissButton = { TextButton({ askFree = false }) { Text(t("no"), color = NB.Muted) } })
+    if (askTg) TgProxyDialog(vm) { askTg = false }
     if (askToken) AlertDialog(
         onDismissRequest = { askToken = false }, containerColor = NB.Card,
         title = { Text(t("deploy"), color = NB.Text) },

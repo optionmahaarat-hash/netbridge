@@ -31,13 +31,25 @@ object CfDeploy {
     }
 
     /** (body, content type) of the module upload: a JSON "metadata" part plus the "worker.js" module. */
-    fun multipart(source: String): Pair<ByteArray, String> {
+    fun multipart(source: String, bindings: List<JSONObject>? = null): Pair<ByteArray, String> {
         val b = "----nb" + hex(12)
-        val meta = JSONObject().put("main_module", "worker.js").put("compatibility_date", COMPAT).toString()
+        val mj = JSONObject().put("main_module", "worker.js").put("compatibility_date", COMPAT)
+        if (!bindings.isNullOrEmpty()) mj.put("bindings", JSONArray().also { a -> bindings.forEach { a.put(it) } })
+        val meta = mj.toString()
         val body = "--$b\r\nContent-Disposition: form-data; name=\"metadata\"\r\nContent-Type: application/json\r\n\r\n$meta\r\n" +
             "--$b\r\nContent-Disposition: form-data; name=\"worker.js\"; filename=\"worker.js\"\r\n" +
             "Content-Type: application/javascript+module\r\n\r\n$source\r\n--$b--\r\n"
         return body.toByteArray(Charsets.UTF_8) to "multipart/form-data; boundary=$b"
+    }
+
+    /** The account's workers.dev sub-domain. A fresh account has none and Cloudflare answers the GET with an error, so create one then. */
+    fun ensureSubdomain(call: CfCall, acc: String, token: String): String {
+        val cur = try { (call("GET", "/accounts/$acc/workers/subdomain", token, null, "application/json") as? JSONObject)?.optString("subdomain").orEmpty() }
+                  catch (_: DeployError) { "" }
+        if (cur.isNotEmpty()) return cur
+        val sub = "nb-" + hex(4)
+        call("PUT", "/accounts/$acc/workers/subdomain", token, JSONObject().put("subdomain", sub).toString().toByteArray(), "application/json")
+        return sub
     }
 
     fun realCall(proxyPort: Int?): CfCall = { method, path, token, body, ctype ->
@@ -83,11 +95,7 @@ object CfDeploy {
         val (body, ctype) = multipart(workerSource(template, uuid))
         call("PUT", "/accounts/$acc/workers/scripts/$name", token, body, ctype)
         progress("subdomain")
-        var sub = (call("GET", "/accounts/$acc/workers/subdomain", token, null, "application/json") as? JSONObject)?.optString("subdomain").orEmpty()
-        if (sub.isEmpty()) {
-            sub = "nb-" + hex(4)
-            call("PUT", "/accounts/$acc/workers/subdomain", token, JSONObject().put("subdomain", sub).toString().toByteArray(), "application/json")
-        }
+        val sub = ensureSubdomain(call, acc, token)
         call("POST", "/accounts/$acc/workers/scripts/$name/subdomain", token,
             JSONObject().put("enabled", true).put("previews_enabled", false).toString().toByteArray(), "application/json")
         val host = "$name.$sub.workers.dev"

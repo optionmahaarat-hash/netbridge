@@ -176,6 +176,40 @@ class Vm(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private fun cfProxy(): Int? = if (ui.value.phase == Phase.CONNECTED) VpnSvc.httpPort else null
+
+    /** Domains already on the user's Cloudflare account. onDone(ok, zones, error). */
+    fun tgZones(token: String, onDone: (Boolean, List<Pair<String, String>>, String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val z = withContext(Dispatchers.IO) { TgProxy.listZones(token, CfDeploy.realCall(cfProxy())) }
+                onDone(true, z, "")
+            } catch (e: Exception) { onDone(false, emptyList(), e.message ?: "error") }
+        }
+    }
+
+    /** Creates the Telegram web-proxy Worker (+ optional custom domain) and checks it. onDone(ok, link, note); note = health result or error. */
+    fun tgCreate(token: String, zone: Pair<String, String>?, label: String, onDone: (Boolean, String, String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val port = cfProxy()
+                val r = withContext(Dispatchers.IO) {
+                    val src = TgProxy.fetchSource(TgProxy.httpGet(port))
+                    TgProxy.deploy(token, src, zone, label, CfDeploy.realCall(port))
+                }
+                store.tgLink = r.link
+                val h = withContext(Dispatchers.IO) {
+                    var res = false to ""
+                    for (i in 0 until 4) { res = TgProxy.health(r.server, port); if (res.first) break; Thread.sleep(8000) }
+                    res
+                }
+                onDone(true, r.link, if (h.first) "ok" else h.second)
+            } catch (e: Exception) { onDone(false, "", e.message ?: "error") }
+        }
+    }
+
+    fun tgLastLink(): String = store.tgLink
+
     fun refreshSubs(onDone: (Int) -> Unit) {
         viewModelScope.launch {
             var total = 0
