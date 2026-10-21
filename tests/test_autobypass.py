@@ -119,12 +119,14 @@ def test_no_relaxed_fallback_when_strict_passes():
 
 
 def test_firewall_order():
-    base = ab.variants(tls("a"), ["https://dns.google/dns-query"], ipv6=False)
+    base = ab.variants(tls("a"), ["https://dns.google/dns-query"], ipv6=True)
     kinds = lambda L: [v["bypass"] for v in L]
-    assert kinds(ab.variants(tls("a"), ["https://dns.google/dns-query"])) == kinds(base)           # auto = default order
-    mci = ab.variants(tls("a"), ["https://dns.google/dns-query"], firewall="mci")
-    assert mci[0]["bypass"] == "ech" and "+udp://" in mci[0]["ech"] and mci[-1]["bypass"] != "ech"
+    for fw in ("auto", "mci", "irancell"):
+        o = ab.variants(tls("a"), ["https://dns.google/dns-query"], ipv6=True, firewall=fw)
+        k = kinds(o)
+        assert k[-3:] == ["ech", "ech", "ech"] or k[-4:].count("ech") >= 3      # ECH last (cloudflare-ech.com is blocked now)
+        assert sorted(map(str, o)) == sorted(map(str, base))                    # same methods, only reordered
     ir = ab.variants(tls("a"), ["https://dns.google/dns-query"], firewall="irancell")
-    assert ir[0]["bypass"] not in ("off", "ech") and ir[-1]["bypass"] == "ech"
-    assert sorted(map(str, mci)) == sorted(map(str, base)) == sorted(map(str, ir))                # same methods, only reordered
+    assert ir[0]["bypass"] not in ("off", "ech")                                # fragment first on Irancell
+
 

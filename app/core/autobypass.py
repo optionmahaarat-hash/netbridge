@@ -101,20 +101,19 @@ FIREWALLS = ("auto", "mci", "irancell")
 
 
 def order_for_firewall(out, firewall):
-    """Reorders the methods (stable) for the operator firewall, following the Patterniha ECH guide:
-    MCI (Hamrah-e Aval): ECH first (the UDP key-fetch form first), then IPv6 entry points, then plain / fragment.
-    Irancell: fragment+unsafe+cipher first (F&F), then plain, ECH last (the guide says to clear echConfigList there).
-    'auto' keeps the default order."""
-    if firewall not in ("mci", "irancell"):
-        return out
+    """Orders the methods. ECH is ALWAYS last: the Patterniha channel reports (post 191) that cloudflare-ech.com is now blocked, so the ECH
+    methods rarely work any more (they are still tried at the end, in case your network differs).
+    MCI (Hamrah-e Aval): IPv6 entry points first, then plain, then fragment.   Irancell: fragment+unsafe+cipher first (F&F), then plain, then IPv6.
+    'auto': the default order (plain, fragment, IPv6)."""
     ech = [v for v in out if v.get("bypass") == "ech"]
     ip6 = [v for v in out if v.get("ip6")]
     off = [v for v in out if v.get("bypass") == "off" and not v.get("ip6")]
     rest = [v for v in out if v not in ech and v not in ip6 and v not in off]       # pattng / standard / new presets
     if firewall == "mci":
-        ech.sort(key=lambda v: 0 if "+udp://" in str(v.get("ech")) else (1 if str(v.get("ech")).startswith("h2c://") else 2))
-        return ech + ip6 + off + rest
-    return rest + off + ech + ip6
+        return ip6 + off + rest + ech
+    if firewall == "irancell":
+        return rest + off + ip6 + ech
+    return off + rest + ip6 + ech
 
 
 def variants(profile, doh_urls=(), clean_ip=None, ipv6=False, firewall="auto"):

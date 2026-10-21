@@ -477,7 +477,7 @@ class MainWindow(QMainWindow):
         self.fw_combo = QComboBox()
         self.fw_combo.setToolTip("Which operator firewall you are behind. AUTO tries the methods that suit it first (faster). "
                                  "A SIM can be MCI while the firewall is Irancell, and the other way round: if one does not work, try the other.")
-        for k, v in (("auto", "Firewall: unknown (default order)"), ("mci", "Firewall: MCI / Hamrah-e Aval (ECH first)"),
+        for k, v in (("auto", "Firewall: unknown (default order)"), ("mci", "Firewall: MCI / Hamrah-e Aval (IPv6 first)"),
                      ("irancell", "Firewall: Irancell (Fragment first)")):
             self.fw_combo.addItem(v, k)
         self.fw_combo.setCurrentIndex(max(0, self.fw_combo.findData(self.settings.get("firewall", "auto"))))

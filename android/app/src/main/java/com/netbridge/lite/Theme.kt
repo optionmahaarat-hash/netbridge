@@ -85,7 +85,7 @@ private val S: Map<String, Pair<String, String>> = mapOf(
     "deploy_fail" to ("ساخت ناموفق بود:" to "Could not create it:"),
     "fw" to ("فایروال اپراتور" to "Operator firewall"),
     "fw_auto" to ("نامعلوم" to "Unknown"),
-    "fw_mci" to ("همراه اول (ECH اول)" to "MCI (ECH first)"),
+    "fw_mci" to ("همراه اول (IPv6 اول)" to "MCI (IPv6 first)"),
     "fw_irancell" to ("ایرانسل (Fragment اول)" to "Irancell (Fragment first)"),
     "fw_help" to ("سیم‌کارت همراه اول ممکن است فایروال ایرانسل داشته باشد و برعکس. اگر یکی جواب نداد، دیگری را امتحان کنید." to "A MCI SIM can sit behind the Irancell firewall and the other way round. If one does not work, try the other."),
     "tg" to ("پروکسی تلگرام (Worker شخصی)" to "Telegram proxy (my Worker)"),
