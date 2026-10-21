@@ -336,9 +336,9 @@ class AutoWorker(QThread):
     status = Signal(str)
     progress = Signal(int, int)
     summary = Signal(object)
-    def __init__(self, exe, profiles, parent=None):
+    def __init__(self, exe, profiles, parent=None, firewall="auto"):
         super().__init__(parent)
-        self.exe, self.profiles, self._stop = exe, profiles, False
+        self.exe, self.profiles, self._stop, self.firewall = exe, profiles, False, firewall
     def stop(self): self._stop = True
     def run(self):
         try:
