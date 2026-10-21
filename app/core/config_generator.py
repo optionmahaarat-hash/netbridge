@@ -42,10 +42,6 @@ def _stream(p):
         if p.get("fp"): t["fingerprint"] = p["fp"]
         if p.get("alpn"):
             t["alpn"] = [x.strip() for x in p["alpn"].split(",") if x.strip()]
-        elif network == "ws":
-            t["alpn"] = ["http/1.1"]                 # a Chrome-like hello offers h2, and a WebSocket cannot run over h2 (Patterniha guide)
-        elif network in ("xhttp", "splithttp"):
-            t["alpn"] = ["h2", "http/1.1"]
         _cert_policy(t, p)
         s["tlsSettings"] = t
     elif security == "reality":
