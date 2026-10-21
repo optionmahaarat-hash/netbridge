@@ -80,6 +80,8 @@ object ConfigGen {
             if (sni.isNotEmpty()) t.put("serverName", sni)
             if (p.s("fp").isNotEmpty()) t.put("fingerprint", p.s("fp"))
             if (p.s("alpn").isNotEmpty()) t.put("alpn", jarr(p.s("alpn").split(",").map { it.trim() }.filter { it.isNotEmpty() }))
+            else if (net == "ws") t.put("alpn", jarr(listOf("http/1.1")))                         // WebSocket cannot run over h2 (Patterniha guide)
+            else if (net == "xhttp" || net == "splithttp") t.put("alpn", jarr(listOf("h2", "http/1.1")))
             certPolicy(t, p)
             s.put("tlsSettings", t)
         } else if (security == "reality") {

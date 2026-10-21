@@ -79,3 +79,9 @@ def test_singbox_json_import():
     assert p[1]["security"] == ""
     ws = generate_xray_config(p[0])["outbounds"][0]["streamSettings"]["wsSettings"]
     assert ws["maxEarlyData"] == 2560
+
+
+def test_alpn_defaults_by_network():
+    assert out()["tlsSettings"]["alpn"] == ["http/1.1"]                         # WebSocket
+    assert out(network="xhttp")["tlsSettings"]["alpn"] == ["h2", "http/1.1"]    # XHTTP
+    assert out(alpn="h2")["tlsSettings"]["alpn"] == ["h2"]                      # the profile's own value always wins
