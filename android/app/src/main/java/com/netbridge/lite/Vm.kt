@@ -17,7 +17,8 @@ data class Ui(
     val phase: Phase = Phase.IDLE, val done: Int = 0, val total: Int = 0,
     val profiles: List<P> = emptyList(), val rev: Int = 0, val selected: String = "auto",
     val exit: String = "", val msg: String = "", val warn: String = "",
-    val iran: Boolean = true, val lang: String = "fa", val clipNew: Int = 0, val freeAuto: Boolean = false
+    val iran: Boolean = true, val lang: String = "fa", val clipNew: Int = 0, val freeAuto: Boolean = false,
+    val firewall: String = "auto"
 )
 
 class Vm(app: Application) : AndroidViewModel(app) {
@@ -26,7 +27,7 @@ class Vm(app: Application) : AndroidViewModel(app) {
     private var job: Job? = null
     private var clipText = ""
     private var clipSeen = ""
-    val ui = MutableStateFlow(Ui(profiles = profiles.toList(), selected = store.selected, iran = store.iranDirect, lang = store.lang, freeAuto = store.freeAuto))
+    val ui = MutableStateFlow(Ui(profiles = profiles.toList(), selected = store.selected, iran = store.iranDirect, lang = store.lang, freeAuto = store.freeAuto, firewall = store.firewall))
 
     init {
         Presets.load(app)
@@ -62,6 +63,7 @@ class Vm(app: Application) : AndroidViewModel(app) {
                 var warn = ""
                 if (sel != null) pool = listOf(sel)
                 else {
+                    Auto.firewall = store.firewall
                     val r = Auto.run(app, profiles.toList(), { d, t -> set { it.copy(done = d, total = t) } }, ::logLine)
                     withContext(Dispatchers.IO) { store.save(profiles) }
                     refresh()
@@ -223,6 +225,7 @@ class Vm(app: Application) : AndroidViewModel(app) {
 
     // ---------- settings / clipboard ----------
     fun setFreeAuto(v: Boolean) { store.freeAuto = v; set { it.copy(freeAuto = v) } }
+    fun setFirewall(v: String) { store.firewall = v; Auto.firewall = v; set { it.copy(firewall = v) } }
     fun setIran(v: Boolean) { store.iranDirect = v; set { it.copy(iran = v) } }
     fun setLang(v: String) { store.lang = v; set { it.copy(lang = v) } }
     fun clearMsg() = set { it.copy(msg = "") }

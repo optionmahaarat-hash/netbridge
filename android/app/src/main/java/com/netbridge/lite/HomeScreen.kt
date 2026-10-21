@@ -313,6 +313,20 @@ private fun SettingsSheet(vm: Vm, ui: Ui, toast: (String) -> Unit) {
             }
         }
         Divider2()
+        Column(Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
+            Text(t("fw"), color = NB.Text, fontSize = 14.sp)
+            Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                for (code in listOf("auto", "mci", "irancell")) {
+                    val sel = ui.firewall == code
+                    Box(Modifier.clip(CircleShape).background(if (sel) NB.Gold else Color.Transparent)
+                        .border(1.dp, if (sel) NB.Gold else NB.Stroke, CircleShape).clickable { vm.setFirewall(code) }.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                        Text(t("fw_$code"), color = if (sel) NB.Bg0 else NB.Text, fontSize = 12.sp)
+                    }
+                }
+            }
+            Text(t("fw_help"), color = NB.Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp))
+        }
+        Divider2()
         Action(t("refresh_subs"), NB.Text) { vm.refreshSubs { toast("$it $upd") } }
         Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(t("free_auto"), color = NB.Text, fontSize = 14.sp, modifier = Modifier.weight(1f))

@@ -116,3 +116,15 @@ def test_no_relaxed_fallback_when_strict_passes():
     r = ab.auto_run("x", [tls("a")], lambda *a: None, tester=strict, relaxed_tester=relaxed,
                     doh_check=lambda: [], want=1, workers=1, scanner=_NoScan())
     assert r["relaxed_fallback"] is False
+
+
+def test_firewall_order():
+    base = ab.variants(tls("a"), ["https://dns.google/dns-query"], ipv6=False)
+    kinds = lambda L: [v["bypass"] for v in L]
+    assert kinds(ab.variants(tls("a"), ["https://dns.google/dns-query"])) == kinds(base)           # auto = default order
+    mci = ab.variants(tls("a"), ["https://dns.google/dns-query"], firewall="mci")
+    assert mci[0]["bypass"] == "ech" and "+udp://" in mci[0]["ech"] and mci[-1]["bypass"] != "ech"
+    ir = ab.variants(tls("a"), ["https://dns.google/dns-query"], firewall="irancell")
+    assert ir[0]["bypass"] not in ("off", "ech") and ir[-1]["bypass"] == "ech"
+    assert sorted(map(str, mci)) == sorted(map(str, base)) == sorted(map(str, ir))                # same methods, only reordered
+

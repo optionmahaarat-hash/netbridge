@@ -97,7 +97,27 @@ def resolve6(host, port=443):
     return _V6[host]
 
 
-def variants(profile, doh_urls=(), clean_ip=None, ipv6=False):
+FIREWALLS = ("auto", "mci", "irancell")
+
+
+def order_for_firewall(out, firewall):
+    """Reorders the methods (stable) for the operator firewall, following the Patterniha ECH guide:
+    MCI (Hamrah-e Aval): ECH first (the UDP key-fetch form first), then IPv6 entry points, then plain / fragment.
+    Irancell: fragment+unsafe+cipher first (F&F), then plain, ECH last (the guide says to clear echConfigList there).
+    'auto' keeps the default order."""
+    if firewall not in ("mci", "irancell"):
+        return out
+    ech = [v for v in out if v.get("bypass") == "ech"]
+    ip6 = [v for v in out if v.get("ip6")]
+    off = [v for v in out if v.get("bypass") == "off" and not v.get("ip6")]
+    rest = [v for v in out if v not in ech and v not in ip6 and v not in off]       # pattng / standard / new presets
+    if firewall == "mci":
+        ech.sort(key=lambda v: 0 if "+udp://" in str(v.get("ech")) else (1 if str(v.get("ech")).startswith("h2c://") else 2))
+        return ech + ip6 + off + rest
+    return rest + off + ech + ip6
+
+
+def variants(profile, doh_urls=(), clean_ip=None, ipv6=False, firewall="auto"):
     """Ordered list of override dicts to try for one profile.
     ipv6=True adds, at the END, IPv6 entry points for servers given by name ({"ip6": True} = connect to the server's AAAA address)."""
     if not is_tls(profile):
@@ -114,7 +134,7 @@ def variants(profile, doh_urls=(), clean_ip=None, ipv6=False):
         # the name is resolved later, inside the worker thread (find_variant skips the variant when there is no AAAA record)
         first = (bypass.auto_names() or ["off"])[0]
         out += [{"bypass": "off", "ip6": True}] + ([{"bypass": first, "ip6": True}] if first != "off" else [])
-    return out
+    return order_for_firewall(out, firewall)
 
 
 def _with(profile, v):
@@ -246,7 +266,7 @@ def _run_phase(executable, jobs, on_win, cancelled, want, state, workers, tester
 
 def auto_run(executable, profiles, on_win, on_status=lambda s: None, on_progress=lambda d, t: None,
              cancelled=lambda: False, want=4, workers=10, tester=strict_test, doh_check=reachable_doh,
-             scanner=ipscan, relaxed_tester=test_one):
+             scanner=ipscan, relaxed_tester=test_one, firewall="auto"):
     """Tries to find `want` working TLS profiles. on_win(profile, variant, ms) is called for each success.
     Returns {"tls": n, "plain": n, "insecure_fallback": bool}."""
     UPLOAD_LIMITED["n"] = 0
@@ -268,7 +288,7 @@ def auto_run(executable, profiles, on_win, on_status=lambda s: None, on_progress
     state = {"tls_wins": 0, "wins": 0, "done": 0, "total": len(tls), "progress": on_progress}
     if tls:
         on_status(f"Phase 1: {len(tls)} TLS profile(s) x methods (stops after {want} working)")
-        _run_phase(executable, [(p, variants(p, doh, ipv6=v6)) for p in tls], on_win, cancelled, want, state, workers, tester)
+        _run_phase(executable, [(p, variants(p, doh, ipv6=v6, firewall=firewall)) for p in tls], on_win, cancelled, want, state, workers, tester)
 
     if state["tls_wins"] == 0 and tls and not cancelled():
         cf = [p for p in tls if scanner.looks_cloudflare(p)]
@@ -288,7 +308,7 @@ def auto_run(executable, profiles, on_win, on_status=lambda s: None, on_progress
                 # race: for every profile, each method is tried on all the clean IPs at once; the fastest IP wins
                 jobs = []
                 for p in cf[:20]:
-                    lists = [variants(p, doh, clean_ip=ip) for ip in ips[:RACE_WIDTH]]
+                    lists = [variants(p, doh, clean_ip=ip, firewall=firewall) for ip in ips[:RACE_WIDTH]]
                     jobs.append((p, [list(g) for g in zip(*lists)]))
                 state.update(done=0, total=len(jobs))
                 _run_phase(executable, jobs, on_win, cancelled, want, state, max(2, workers // RACE_WIDTH), tester,
@@ -312,7 +332,7 @@ def auto_run(executable, profiles, on_win, on_status=lambda s: None, on_progress
         on_status("No profile passed the YouTube/Instagram + upload check - falling back to the basic test (weaker; "
                   "these may connect but stall on uploads)")
         state.update(done=0, total=len(tls))
-        _run_phase(executable, [(p, variants(p, doh, ipv6=v6)) for p in tls], on_win, cancelled, 2, state, workers, relaxed_tester)
+        _run_phase(executable, [(p, variants(p, doh, ipv6=v6, firewall=firewall)) for p in tls], on_win, cancelled, 2, state, workers, relaxed_tester)
         relaxed = state["wins"] > 0
     return {"tls": state["tls_wins"], "plain": state["wins"] - state["tls_wins"],
             "insecure_fallback": insecure, "relaxed_fallback": relaxed}

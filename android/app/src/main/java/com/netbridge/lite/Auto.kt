@@ -205,6 +205,20 @@ object Auto {
         return v
     }
 
+    /** operator firewall chosen by the user: "auto" | "mci" | "irancell" (see order_for_firewall in app/core/autobypass.py) */
+    @Volatile var firewall: String = "auto"
+
+    private fun orderFor(out: List<JSONObject>): List<JSONObject> {
+        if (firewall != "mci" && firewall != "irancell") return out
+        val ech = out.filter { it.optString("bypass") == "ech" }
+        val ip6 = out.filter { it.optBoolean("ip6") }
+        val off = out.filter { it.optString("bypass") == "off" && !it.optBoolean("ip6") }
+        val rest = out.filter { it !in ech && it !in ip6 && it !in off }
+        return if (firewall == "mci")
+            ech.sortedBy { val e = it.optString("ech"); if (e.contains("+udp://")) 0 else if (e.startsWith("h2c://")) 1 else 2 } + ip6 + off + rest
+        else rest + off + ech + ip6
+    }
+
     private fun variants(p: P, doh: List<String>): List<JSONObject> {
         if (!isTls(p)) return listOf(JSONObject().put("bypass", "off"))
         val out = ArrayList<JSONObject>()
@@ -222,7 +236,7 @@ object Auto {
             Presets.autoNames().firstOrNull()?.let { out.add(JSONObject().put("bypass", it).put("ip6", true)) }
         }
         val seen = HashSet<String>()
-        return out.filter { seen.add(it.toString()) }
+        return orderFor(out.filter { seen.add(it.toString()) })
     }
 
     /** plain facts about this phone's network, written once into the report */

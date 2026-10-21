@@ -9,6 +9,7 @@ DEFAULTS = {
     "free_auto": False,        # refresh the public config list once a day when the app starts
     "free_last": 0,            # unix time of the last successful refresh
     "mode": "manual",          # manual | best | auto
+    "firewall": "auto",        # auto | mci | irancell: which operator firewall AUTO should try first
     "group": "",               # selected group filter ("" = all)
     "routing": {
         "lan": True,           # local network goes direct
@@ -27,6 +28,7 @@ def load_settings():
     if isinstance(data, dict):
         s["mode"] = data.get("mode", s["mode"])
         s["group"] = data.get("group", s["group"])
+        s["firewall"] = data.get("firewall") if data.get("firewall") in ("auto", "mci", "irancell") else s["firewall"]
         s["free_auto"] = bool(data.get("free_auto", s["free_auto"]))
         s["free_last"] = data["free_last"] if isinstance(data.get("free_last"), (int, float)) else 0
         if isinstance(data.get("routing"), dict):

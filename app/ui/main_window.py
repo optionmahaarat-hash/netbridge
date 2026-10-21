@@ -321,9 +321,9 @@ class RoutingDialog(QDialog):
 
 class DelayWorker(QThread):
     result = Signal(object, int)          # profile dict, ms (-1 = failed)
-    def __init__(self, exe, profiles, parent=None):
+    def __init__(self, exe, profiles, parent=None, firewall="auto"):
         super().__init__(parent)
-        self.exe, self.profiles, self._stop = exe, profiles, False
+        self.exe, self.profiles, self._stop, self.firewall = exe, profiles, False, firewall
     def stop(self): self._stop = True
     def run(self):
         test_many(self.exe, [(p, p) for p in self.profiles],
@@ -344,7 +344,7 @@ class AutoWorker(QThread):
         try:
             res = auto_run(self.exe, self.profiles, lambda p, v, ms: self.win.emit(p, v, ms),
                            on_status=self.status.emit, on_progress=self.progress.emit,
-                           cancelled=lambda: self._stop)
+                           cancelled=lambda: self._stop, firewall=self.firewall)
         except Exception as e:
             self.status.emit(f"Auto bypass error: {e}")
             res = {"tls": 0, "plain": 0, "insecure_fallback": False}
@@ -473,6 +473,15 @@ class MainWindow(QMainWindow):
         self.mode.setCurrentIndex(max(0, self.mode.findData(self.settings.get("mode", "manual"))))
         self.mode.currentIndexChanged.connect(self.mode_changed)
         rl.addWidget(QLabel("Connection mode:")); rl.addWidget(self.mode)
+        self.fw_combo = QComboBox()
+        self.fw_combo.setToolTip("Which operator firewall you are behind. AUTO tries the methods that suit it first (faster). "
+                                 "A SIM can be MCI while the firewall is Irancell, and the other way round: if one does not work, try the other.")
+        for k, v in (("auto", "Firewall: unknown (default order)"), ("mci", "Firewall: MCI / Hamrah-e Aval (ECH first)"),
+                     ("irancell", "Firewall: Irancell (Fragment first)")):
+            self.fw_combo.addItem(v, k)
+        self.fw_combo.setCurrentIndex(max(0, self.fw_combo.findData(self.settings.get("firewall", "auto"))))
+        self.fw_combo.currentIndexChanged.connect(self.firewall_changed)
+        rl.addWidget(self.fw_combo)
         self.connect_btn = QPushButton("CONNECT")
         self.connect_btn.setMinimumHeight(52); self.connect_btn.clicked.connect(self.toggle); self._style_connect(False)
         rl.addWidget(self.connect_btn)
@@ -538,6 +547,10 @@ class MainWindow(QMainWindow):
     def group_changed(self, _):
         self.settings["group"] = self.group_combo.currentData() or ""
         save_settings(self.settings); self.refresh(keep=None)
+
+    def firewall_changed(self, _):
+        self.settings["firewall"] = self.fw_combo.currentData() or "auto"
+        save_settings(self.settings)
 
     def mode_changed(self, _):
         self.settings["mode"] = self.mode.currentData()
@@ -1253,7 +1266,7 @@ class MainWindow(QMainWindow):
         self._auto_wins = []
         self.auto_btn.setText("Stop auto search")
         self.log.append(f"AUTO: testing {len(profs)} profile(s) with every method (this can take a few minutes)...")
-        self.auto_worker = AutoWorker(self.xray.executable, profs, self)
+        self.auto_worker = AutoWorker(self.xray.executable, profs, self, self.settings.get("firewall", "auto"))
         self.auto_worker.win.connect(self._auto_win)
         self.auto_worker.status.connect(self._auto_status)
         self.auto_worker.progress.connect(lambda d, t: self.status.setText(f"Status: auto search {d}/{t} ..."))
