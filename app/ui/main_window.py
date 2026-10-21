@@ -974,32 +974,50 @@ class MainWindow(QMainWindow):
         srcs = sources_mod.load_sources()
         if not srcs:
             QMessageBox.warning(self, "Free configs", "No config source is listed in assets/config_sources.json."); return
-        src = srcs[0]
-        if not silent and QMessageBox.question(self, "Free configs",
-                f"Downloads the public list '{src['name']}' ({src['page']}) and replaces its previous servers.\n\n"
-                "Careful: these servers belong to other people. Your traffic passes through them, so do not use them for banking or "
-                "private accounts - use your own Worker (Deploy my Worker) for that.\n\nAfter it finishes, press AUTO to find the best one. Continue?") != QMessageBox.Yes:
-            return
+        if not silent:
+            names = "\n".join(f"  - {s['name']}  ({s['page']})" for s in srcs)
+            if QMessageBox.question(self, "Free configs",
+                    f"Downloads these public lists and replaces their previous servers:\n{names}\n\n"
+                    "Careful: these servers belong to other people. Your traffic passes through them, so do not use them for banking or "
+                    "private accounts - use your own Worker (Deploy my Worker) for that.\n\nAfter it finishes, press AUTO to find the best one "
+                    "(tip: pick one group in the group box first to make AUTO faster). Continue?") != QMessageBox.Yes:
+                return
+        self._free_queue = list(srcs)
+        self._free_any = False
         self.free_btn.setEnabled(False)
+        self._free_next()
+
+    def _free_next(self):
+        if not self._free_queue:
+            self.free_btn.setEnabled(True)
+            if self._free_any:
+                self.log.append("Press AUTO to test them and connect to the best one.")
+            return
+        self._free_first = not self._free_any and len(self._free_queue) == len(sources_mod.load_sources())
+        src = self._free_queue.pop(0)
         self.srcw = SourceWorker(src, self.proxy_url() if self.xray.running else None, self)
         self.srcw.done.connect(self._free_done)
         self.srcw.start()
 
     def _free_done(self, result):
-        self.free_btn.setEnabled(True)
         if not isinstance(result, tuple):
-            if getattr(self, "_free_silent", False):
-                self.log.append(f"Free configs: could not refresh the list ({result})")
-            else:
+            msg = f"Free configs: a list could not be downloaded ({result})"
+            self.log.append(msg)
+            if not getattr(self, "_free_silent", False) and not self._free_any and not self._free_queue:
                 QMessageBox.warning(self, "Free configs", f"Could not download the list:\n{result}")
+            self._free_next()
             return
+        self._free_any = True
         self.settings["free_last"] = time.time(); save_settings(self.settings)
         src, profiles, mirror, errors = result
         self.profiles[:] = sources_mod.drop_group(self.profiles, src["group"])
-        profiles = self._filter_tls(profiles)
-        self.log.append(f"Free configs from {mirror}")
+        if getattr(self, "_free_first", False) and not getattr(self, "_free_silent", False):
+            profiles = self._filter_tls(profiles)                # ask once, for the first list
+        else:                                                     # the other lists: the bypass methods need TLS, so keep only TLS / Reality
+            profiles = [p for p in profiles if p.get("security") in ("tls", "reality")]
+        self.log.append(f"Free configs '{src['name']}' from {mirror}: {len(profiles)} server(s)")
         self._report(*self._add_profiles(profiles, src["group"]), errors)
-        self.log.append("Press AUTO to test them and connect to the best one.")
+        self._free_next()
 
     # ---------- Telegram web proxy on the user's own Cloudflare account ----------
     def telegram_proxy(self):

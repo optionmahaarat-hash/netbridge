@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "sources": [
     {
       "id": "patterniha",
@@ -9,6 +9,29 @@
       "mirrors": [
         "https://raw.githubusercontent.com/patterniha/Free-Configs/main/configs.txt",
         "https://cdn.jsdelivr.net/gh/patterniha/Free-Configs@main/configs.txt"
+      ],
+      "limit": 300
+    },
+    {
+      "id": "kobabi",
+      "name": "kobabi (tested list for Iran)",
+      "group": "Free: kobabi",
+      "page": "https://github.com/liketolivefree/kobabi",
+      "limit": 80,
+      "mirrors": [
+        "https://raw.githubusercontent.com/liketolivefree/kobabi/main/sub.txt",
+        "https://cdn.jsdelivr.net/gh/liketolivefree/kobabi@main/sub.txt"
+      ]
+    },
+    {
+      "id": "alirewa",
+      "name": "Alirewa V2ray-Configs (top 100, TLS/REALITY first)",
+      "group": "Free: Alirewa",
+      "page": "https://github.com/Alirewa/V2ray-Configs",
+      "limit": 100,
+      "mirrors": [
+        "https://raw.githubusercontent.com/Alirewa/V2ray-Configs/main/sub1.txt",
+        "https://cdn.jsdelivr.net/gh/Alirewa/V2ray-Configs@main/sub1.txt"
       ]
     }
   ]
