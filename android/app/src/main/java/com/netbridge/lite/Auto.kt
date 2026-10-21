@@ -28,6 +28,7 @@ object Auto {
         Triple("Google", "https://www.google.com/generate_204", { c: Int -> c == 204 })
     )
     // same list as the Windows app (names + IPs): a network that blocks the bare IPs often still lets the names through
+    private val ECH_EXTRA = listOf("h2c://1.1.1.1/dns-query", "crypto.cloudflare.com+udp://1.1.1.1")
     private val DOH = listOf(
         "https://dns.google/dns-query", "https://1.1.1.1/dns-query", "https://cloudflare-dns.com/dns-query",
         "https://8.8.8.8/dns-query", "https://dns.quad9.net/dns-query", "https://9.9.9.9/dns-query"
@@ -213,6 +214,8 @@ object Auto {
         // ECH is ALWAYS tried: with the DoH servers that answered, or (if none did) with the two common ones
         for (u in (if (doh.isNotEmpty()) doh else DOH_FALLBACK).take(2))
             out.add(JSONObject().put("bypass", "ech").put("ech", "${ConfigGen.ECH_PUBLIC}+$u"))
+        // extra ways to fetch the ECH keys (Patterniha ECH guide): DNS over HTTP/2 and over UDP to 1.1.1.1; Xray accepts both as echConfigList
+        for (e in ECH_EXTRA) out.add(JSONObject().put("bypass", "ech").put("ech", e))
         // IPv6 entry points go LAST (the name is resolved later, in the worker; no AAAA record = variant skipped)
         if (ipv6Route && p.s("address_override").isEmpty() && !isIp(p.s("server"))) {
             out.add(JSONObject().put("bypass", "off").put("ip6", true))

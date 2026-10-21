@@ -26,6 +26,9 @@ from app.utils import latency
 
 BASE_PORT = 22000
 ECH_PUBLIC_NAME = "cloudflare-ech.com"
+# Extra ways for Xray to fetch the ECH keys (from the Patterniha ECH guide). Plain DNS to 1.1.1.1 is restricted on some
+# networks; these two use DNS-over-HTTP/2 and DNS over UDP to the same address. Xray accepts both strings as echConfigList.
+ECH_EXTRA = ["h2c://1.1.1.1/dns-query", "crypto.cloudflare.com+udp://1.1.1.1"]
 DOH_CANDIDATES = [
     "https://dns.google/dns-query",
     "https://1.1.1.1/dns-query",
@@ -103,6 +106,8 @@ def variants(profile, doh_urls=(), clean_ip=None, ipv6=False):
     out = [{"bypass": "off"}] + [{"bypass": n} for n in bypass.auto_names()]
     for u in list(doh_urls)[:2]:
         out.append({"bypass": "ech", "ech": f"{ECH_PUBLIC_NAME}+{u}"})
+    for e in ECH_EXTRA:                                  # always tried, after the DoH ones (their reachability cannot be pre-checked)
+        out.append({"bypass": "ech", "ech": e})
     if clean_ip:
         out = [dict(v, address_override=clean_ip) for v in out]
     elif ipv6 and not profile.get("address_override") and is_name(profile.get("server")):

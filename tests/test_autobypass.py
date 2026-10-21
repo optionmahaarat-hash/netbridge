@@ -25,6 +25,11 @@ def test_ech_only_with_reachable_doh():
     r, wins, calls = run([tls("a")], lambda p: 90 if p.get("bypass") == "ech" else -1)
     assert wins[0][1]["ech"] == "cloudflare-ech.com+https://dns.google/dns-query"
 
+def test_extra_ech_forms_are_tried_even_without_doh():
+    r, wins, calls = run([tls("a")], lambda p: 80 if p.get("ech") == "h2c://1.1.1.1/dns-query" else -1, doh=())
+    assert wins[0][1]["ech"] == "h2c://1.1.1.1/dns-query"
+    assert "crypto.cloudflare.com+udp://1.1.1.1" in ab.ECH_EXTRA
+
 def test_stops_after_want_winners():
     ps = [tls(str(i)) for i in range(10)]
     r, wins, _ = run(ps, lambda p: 50, want=3)
