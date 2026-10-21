@@ -360,6 +360,7 @@ class MainWindow(QMainWindow):
         self.free_auto_act = tm.addAction("Refresh free configs once a day (on start)")
         self.free_auto_act.setCheckable(True)
         tm.addAction("Telegram proxy (my Cloudflare Worker) ...", lambda: self.telegram_proxy())
+        tm.addAction("Delete ALL profiles (start with an empty list) ...", lambda: self.delete_all())
         hm = self.menuBar().addMenu("&Help")
         hm.addAction("&Guide / راهنما", lambda: HelpDialog(self).exec())
         hm.addAction("&About NetBridge", lambda: AboutDialog(self).exec())
@@ -746,6 +747,19 @@ class MainWindow(QMainWindow):
         self.view = []                       # stale indices must not be used by refresh()
         self.refresh(keep=False)
         self.log.append(f"Deleted {len(idx)} profile(s).")
+
+    def delete_all(self):
+        if not self.profiles:
+            self.log.append("The list is already empty."); return
+        if QMessageBox.question(self, "Delete all", f"Delete ALL {len(self.profiles)} profiles and start with an empty list?\n"
+                                "(Disconnect first if you are connected.)", QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        n = len(self.profiles)
+        self.profiles.clear()
+        save_profiles(self.profiles)         # an existing (empty) file is never re-filled with the bundled servers
+        self.view = []
+        self.refresh(keep=False)
+        self.log.append(f"Deleted all {n} profile(s). The list is empty now.")
 
     # ---- plain -> TLS
     def convert_tls(self):
