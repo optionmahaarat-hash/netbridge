@@ -148,18 +148,25 @@ class Vm(app: Application) : AndroidViewModel(app) {
         store.save(profiles); refresh(); return n
     }
 
-    /** Downloads the public list, replaces its previous servers and adds the fresh ones. onDone(ok, text): the count or the error. */
+    /** Downloads every public list, replaces each list's previous servers and adds the fresh ones.
+     *  A list that fails is skipped (the others still count). onDone(ok, text): the number of new servers, or the error. */
     fun getFreeConfigs(onDone: (Boolean, String) -> Unit) {
         viewModelScope.launch {
             try {
                 val proxy = if (ui.value.phase == Phase.CONNECTED) VpnSvc.httpPort else null
-                val (found, _) = withContext(Dispatchers.IO) { Sources.fetchFirst(Sources.MIRRORS) { Net.fetchSubscription(it, proxy).first } }
-                val fresh = found.onEach { it.put("group", Sources.GROUP) }
-                val keep = Sources.dropGroup(profiles.toList(), Sources.GROUP)
-                profiles.clear(); profiles.addAll(keep)
-                val n = merge(fresh)
+                var total = 0; var okLists = 0; var lastErr = "no list answered"
+                for (src in Sources.ALL) {
+                    try {
+                        val (found, _) = withContext(Dispatchers.IO) { Sources.fetchFirst(src.mirrors, src.limit) { Net.fetchSubscription(it, proxy).first } }
+                        found.forEach { it.put("group", src.group) }
+                        val keep = Sources.dropGroup(profiles.toList(), src.group)
+                        profiles.clear(); profiles.addAll(keep)
+                        total += merge(found); okLists++
+                    } catch (e: Exception) { lastErr = "${src.id}: ${e.message}" }
+                }
+                if (okLists == 0) { onDone(false, lastErr); return@launch }
                 store.freeLast = System.currentTimeMillis()
-                onDone(true, n.toString())
+                onDone(true, total.toString())
             } catch (e: Exception) { onDone(false, e.message ?: "error") }
         }
     }
