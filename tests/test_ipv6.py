@@ -78,7 +78,8 @@ def test_variants_without_ipv6_are_unchanged():
 def test_ipv6_variants_come_last_and_only_for_servers_given_by_name():
     v = ab.variants(tls("a"), doh_urls=["https://dns.google/dns-query"], ipv6=True)
     assert [x for x in v if x.get("ip6")] == [{"bypass": "off", "ip6": True}, {"bypass": "pattng", "ip6": True}]
-    assert v[-1].get("ip6") and not v[0].get("ip6")
+    non_ech = [x for x in v if not x.get("ech")]
+    assert non_ech[-1].get("ip6") and not v[0].get("ip6")      # ECH variants are always tried last
     assert all("ip6" not in x for x in ab.variants(tls("a", server="1.2.3.4"), ipv6=True))
     assert all("ip6" not in x for x in ab.variants(tls("a", server="2606:4700::1"), ipv6=True))
     assert all("ip6" not in x for x in ab.variants(dict(tls("a"), address_override="104.20.1.1"), ipv6=True))

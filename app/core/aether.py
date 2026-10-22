@@ -203,7 +203,8 @@ def parse_bridges(text):
 
 
 def build_args(exe, port=DEFAULT_PORT, mode="h3", config=None, protocol="masque", tor=None, tor_port=None, tor_dir=None, family="4",
-               psiphon=None, psiphon_port=None, psiphon_dir=None, region=None, bridge_file=None, bridges_now=False, upstream=None):
+               psiphon=None, psiphon_port=None, psiphon_dir=None, region=None, bridge_file=None, bridges_now=False, upstream=None,
+               psiphon_mode=None, noize="firewall"):
     """Command line. Every choice is given as a flag, because a flag suppresses that question (Aether asks interactively otherwise).
     family: which gateway addresses to scan: "4" (IPv4), "6" (IPv6) or "dual". Some networks only let IPv6 through.
     mode: "h3" = MASQUE over HTTP/3 (default), "h2" = MASQUE over HTTP/2 with ClientHello fragmentation (when UDP/QUIC is blocked).
@@ -224,12 +225,16 @@ def build_args(exe, port=DEFAULT_PORT, mode="h3", config=None, protocol="masque"
         raise ValueError("region must be a two-letter country code")
     if tor and psiphon:
         raise ValueError("choose Tor or Psiphon, not both")
+    if psiphon_mode not in (None, "cdn", "direct"):
+        raise ValueError("psiphon_mode must be None, 'cdn' (fronted meek only) or 'direct' (fronting off)")
+    if noize not in ("firewall", "gfw"):
+        raise ValueError("noize must be 'firewall' (balanced) or 'gfw' (heavier, for severe filtering)")
     if tor == "tor-only":
         args = [str(exe), "--bind", f"127.0.0.1:{int(port)}", "--tor-only"]
     elif psiphon == "psiphon-only":
         args = [str(exe), "--bind", f"127.0.0.1:{int(port)}", "--psiphon-only"]
     else:
-        args = [str(exe), "--bind", f"127.0.0.1:{int(port)}", {"4": "-4", "6": "-6", "dual": "--dual"}[family], f"--{protocol}", "--turbo", "--noize", "firewall", "--quick-reconnect"]
+        args = [str(exe), "--bind", f"127.0.0.1:{int(port)}", {"4": "-4", "6": "-6", "dual": "--dual"}[family], f"--{protocol}", "--turbo", "--noize", noize, "--quick-reconnect"]
         if protocol == "masque" and mode == "h2":
             args += ["--h2", "--fragment"]
         if tor == "tor":
@@ -247,6 +252,8 @@ def build_args(exe, port=DEFAULT_PORT, mode="h3", config=None, protocol="masque"
             args += ["--psiphon-dir", str(psiphon_dir)]
         if region:
             args += ["--psiphon-region", region.upper()]
+        if psiphon_mode:
+            args += ["--psiphon-mode", psiphon_mode]
     if upstream:
         if not re.match(r"^(socks5|http)://[\w.\-\[\]:%@]+:\d{1,5}$", upstream):
             raise ValueError("upstream must look like socks5://127.0.0.1:1080")
@@ -302,6 +309,8 @@ class AetherManager:
         self.bridges = []                     # the user's own Tor bridge lines (see parse_bridges); empty = Aether fetches its own
         self.upstream = None                  # socks5://127.0.0.1:port of a connection that already works: Aether dials through it
         self.bridges_now = False              # go to bridges at once instead of trying plain Tor first
+        self.psiphon_mode = None              # None = Psiphon decides, "cdn" = fronted meek only, "direct" = fronting off (Aether >= 2.2)
+        self.noize = "firewall"               # "gfw" = the heavier obfuscation profile for severe filtering (Aether >= 2.2)
         self._lines = []
         self._lock = threading.Lock()
 
@@ -328,7 +337,8 @@ class AetherManager:
         args = build_args(self.executable, port, mode, config=self.data_dir / "aether.toml", tor=tor, tor_port=tor_port,
                           tor_dir=self.data_dir / "tor", protocol=protocol, family=family,
                           psiphon=psiphon, psiphon_port=psiphon_port, psiphon_dir=self.data_dir / "psiphon", region=region,
-                          bridge_file=bridge_file, bridges_now=bool(self.bridges_now and tor), upstream=self.upstream)
+                          bridge_file=bridge_file, bridges_now=bool(self.bridges_now and tor), upstream=self.upstream,
+                          psiphon_mode=self.psiphon_mode, noize=self.noize)
         env = None
         if getattr(self, "proxy_env", None):                     # registration (api.cloudflareclient.com) is filtered on some networks:
             env = dict(os.environ)                               # hand the running NetBridge proxy to Aether in case it honours these

@@ -457,6 +457,16 @@ class MainWindow(QMainWindow):
             self.psi_region.addItem(label, cc)
         self.psi_region.setToolTip("Exit country for Psiphon (Auto = Psiphon decides).")
         r8.addWidget(self.psi_region)
+        self.psi_mode = QComboBox()
+        for label, v in (("Psiphon: automatic", None), ("Psiphon: CDN-fronted only", "cdn"), ("Psiphon: direct (no fronting)", "direct")):
+            self.psi_mode.addItem(label, v)
+        self.psi_mode.setToolTip("If Psiphon cannot start on your network, try 'CDN-fronted only' (it hides behind a CDN). Needs Aether 2.2 or newer.")
+        r8.addWidget(self.psi_mode)
+        self.noize_combo = QComboBox()
+        for label, v in (("Obfuscation: firewall (balanced)", "firewall"), ("Obfuscation: gfw (heavier)", "gfw")):
+            self.noize_combo.addItem(label, v)
+        self.noize_combo.setToolTip("WARP / MASQUE obfuscation profile. Try 'gfw' when 'firewall' does not connect. Needs Aether 2.2 or newer.")
+        r8.addWidget(self.noize_combo)
         self.tg_btn = QPushButton("Telegram proxy"); self.tg_btn.clicked.connect(self.telegram_proxy); r8.addWidget(self.tg_btn)
         self.via_chk = QCheckBox("Aether through my current connection")
         self.via_chk.setChecked(True)          # default on: used only when a normal connection is already running
@@ -914,6 +924,8 @@ class MainWindow(QMainWindow):
                     "checked with its SHA-256 and kept in cores/aether/. Continue?") != QMessageBox.Yes:
                 return
         self.aether.upstream = None
+        self.aether.psiphon_mode = self.psi_mode.currentData() if kind.startswith("psiphon") else None
+        self.aether.noize = self.noize_combo.currentData() or "firewall"
         if self.via_chk.isChecked() and self.xray.running and not self.aether.running:
             port = self.start_feeder()
             if not port:
