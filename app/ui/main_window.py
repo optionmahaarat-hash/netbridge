@@ -376,6 +376,7 @@ class MainWindow(QMainWindow):
         self.settings = load_settings()
         self.free_auto_act.setChecked(bool(self.settings.get("free_auto")))
         _ab.EXTRA_DOH[:] = list(self.settings.get("doh_extra") or [])
+        _ab.ECH_ENABLED = bool(self.settings.get("use_ech", True))
         self.free_auto_act.toggled.connect(self._set_free_auto)
         QTimer.singleShot(4000, self._free_auto_check)
         self.view = []; self.worker = None; self.auto_worker = None; self._auto_wins = []; self.pending_best = False; self._done = 0; self._total = 0
@@ -501,6 +502,11 @@ class MainWindow(QMainWindow):
         self.fw_combo.setCurrentIndex(max(0, self.fw_combo.findData(self.settings.get("firewall", "auto"))))
         self.fw_combo.currentIndexChanged.connect(self.firewall_changed)
         rl.addWidget(self.fw_combo)
+        self.ech_chk = QCheckBox("Try ECH")
+        self.ech_chk.setToolTip("AUTO tries the ECH methods last. Untick to skip them completely (saves time when Cloudflare ECH is blocked on your network).")
+        self.ech_chk.setChecked(bool(self.settings.get("use_ech", True)))
+        self.ech_chk.toggled.connect(self.ech_toggled)
+        rl.addWidget(self.ech_chk)
         self.connect_btn = QPushButton("CONNECT")
         self.connect_btn.setMinimumHeight(52); self.connect_btn.clicked.connect(self.toggle); self._style_connect(False)
         rl.addWidget(self.connect_btn)
@@ -566,6 +572,11 @@ class MainWindow(QMainWindow):
     def group_changed(self, _):
         self.settings["group"] = self.group_combo.currentData() or ""
         save_settings(self.settings); self.refresh(keep=None)
+
+    def ech_toggled(self, on):
+        self.settings["use_ech"] = bool(on)
+        _ab.ECH_ENABLED = bool(on)
+        save_settings(self.settings)
 
     def firewall_changed(self, _):
         self.settings["firewall"] = self.fw_combo.currentData() or "auto"

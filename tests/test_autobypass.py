@@ -130,3 +130,11 @@ def test_firewall_order():
     assert ir[0]["bypass"] not in ("off", "ech")                                # fragment first on Irancell
 
 
+
+
+def test_ech_switch_removes_all_ech_variants(monkeypatch):
+    p = tls("a")
+    monkeypatch.setattr(ab, "ECH_ENABLED", True)
+    assert any(v.get("bypass") == "ech" for v in ab.variants(p, ["https://dns.google/dns-query"]))
+    monkeypatch.setattr(ab, "ECH_ENABLED", False)
+    assert not any(v.get("bypass") == "ech" for v in ab.variants(p, ["https://dns.google/dns-query"]))

@@ -64,6 +64,7 @@ def doh_works(url, timeout=4.0):
         return False
 
 
+ECH_ENABLED = True       # settings "use_ech": False drops every ECH variant (and the DoH check) so AUTO does not waste time on them
 EXTRA_DOH = []          # filled from the resolver scan (settings "doh_extra"); tried before the built-in list
 
 
@@ -126,10 +127,11 @@ def variants(profile, doh_urls=(), clean_ip=None, ipv6=False, firewall="auto"):
         return [{"bypass": "off"}]
     # "off", then every preset the (updatable) presets file marks for AUTO: pattng, standard and any new ones
     out = [{"bypass": "off"}] + [{"bypass": n} for n in bypass.auto_names()]
-    for u in list(doh_urls)[:2]:
-        out.append({"bypass": "ech", "ech": f"{ECH_PUBLIC_NAME}+{u}"})
-    for e in ECH_EXTRA:                                  # always tried, after the DoH ones (their reachability cannot be pre-checked)
-        out.append({"bypass": "ech", "ech": e})
+    if ECH_ENABLED:
+        for u in list(doh_urls)[:2]:
+            out.append({"bypass": "ech", "ech": f"{ECH_PUBLIC_NAME}+{u}"})
+        for e in ECH_EXTRA:                              # always tried, after the DoH ones (their reachability cannot be pre-checked)
+            out.append({"bypass": "ech", "ech": e})
     if clean_ip:
         out = [dict(v, address_override=clean_ip) for v in out]
     elif ipv6 and not profile.get("address_override") and is_name(profile.get("server")):
@@ -278,9 +280,10 @@ def auto_run(executable, profiles, on_win, on_status=lambda s: None, on_progress
     # profiles that worked before go first
     tls.sort(key=lambda p: (p.get("delay", 10 ** 6) if p.get("delay", -1) >= 0 else 10 ** 7))
 
-    on_status("Checking which DNS-over-HTTPS servers are reachable (for ECH)...")
-    doh = doh_check() if tls else []
-    on_status("ECH DoH reachable: " + (", ".join(doh) if doh else "none - ECH will be skipped"))
+    if ECH_ENABLED:
+        on_status("Checking which DNS-over-HTTPS servers are reachable (for ECH)...")
+    doh = doh_check() if tls and ECH_ENABLED else []
+    on_status("ECH DoH reachable: " + (", ".join(doh) if doh else "none - ECH will be skipped") if ECH_ENABLED else "ECH is switched off")
 
     has6 = getattr(scanner, "has_ipv6", None)
     v6 = bool(has6()) if (tls and callable(has6)) else False

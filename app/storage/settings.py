@@ -9,6 +9,7 @@ DEFAULTS = {
     "free_auto": False,        # refresh the public config list once a day when the app starts
     "free_last": 0,            # unix time of the last successful refresh
     "mode": "manual",          # manual | best | auto
+    "use_ech": True,           # False: AUTO skips every ECH method (Cloudflare ECH is blocked on many networks)
     "firewall": "auto",        # auto | mci | irancell: which operator firewall AUTO should try first
     "group": "",               # selected group filter ("" = all)
     "doh_extra": [],           # DoH URLs found by the resolver scan; AUTO tries them first for the ECH key lookup
@@ -30,6 +31,7 @@ def load_settings():
         s["mode"] = data.get("mode", s["mode"])
         s["group"] = data.get("group", s["group"])
         s["firewall"] = data.get("firewall") if data.get("firewall") in ("auto", "mci", "irancell") else s["firewall"]
+        s["use_ech"] = bool(data.get("use_ech", s["use_ech"]))
         d = data.get("doh_extra")
         s["doh_extra"] = [u for u in d if isinstance(u, str) and u.startswith("https://")][:6] if isinstance(d, list) else []
         s["free_auto"] = bool(data.get("free_auto", s["free_auto"]))
