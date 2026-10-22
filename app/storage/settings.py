@@ -11,6 +11,7 @@ DEFAULTS = {
     "mode": "manual",          # manual | best | auto
     "firewall": "auto",        # auto | mci | irancell: which operator firewall AUTO should try first
     "group": "",               # selected group filter ("" = all)
+    "doh_extra": [],           # DoH URLs found by the resolver scan; AUTO tries them first for the ECH key lookup
     "routing": {
         "lan": True,           # local network goes direct
         "iran": False,         # Iranian sites go direct (they reject foreign IPs)
@@ -29,6 +30,8 @@ def load_settings():
         s["mode"] = data.get("mode", s["mode"])
         s["group"] = data.get("group", s["group"])
         s["firewall"] = data.get("firewall") if data.get("firewall") in ("auto", "mci", "irancell") else s["firewall"]
+        d = data.get("doh_extra")
+        s["doh_extra"] = [u for u in d if isinstance(u, str) and u.startswith("https://")][:6] if isinstance(d, list) else []
         s["free_auto"] = bool(data.get("free_auto", s["free_auto"]))
         s["free_last"] = data["free_last"] if isinstance(data.get("free_last"), (int, float)) else 0
         if isinstance(data.get("routing"), dict):

@@ -27,6 +27,8 @@ from app.core.autobypass import auto_run, apply_variant, is_tls, label as varian
 from app.utils.latency import exit_info
 from app.utils.leakcheck import full_report
 from app.core import browser, ipscan, ports
+from app.core import autobypass as _ab
+from app.ui.resolver_dialog import ResolverDialog
 from app.core.routing import SERVICE_PRESETS, SDNS_PRESETS, parse_dns_server, split_entries
 from app.utils import dnscheck
 from app.ui.scan_dialog import ScanDialog
@@ -365,6 +367,7 @@ class MainWindow(QMainWindow):
         self.free_auto_act.setCheckable(True)
         tm.addAction("Telegram proxy (my Cloudflare Worker) ...", lambda: self.telegram_proxy())
         tm.addAction("Delete ALL profiles (start with an empty list) ...", lambda: self.delete_all())
+        tm.addAction("DNS resolver finder (UDP / TCP / DoT / DoH) ...", lambda: ResolverDialog(self.settings, save_settings, self).exec())
         hm = self.menuBar().addMenu("&Help")
         hm.addAction("&Guide / راهنما", lambda: HelpDialog(self).exec())
         hm.addAction("&About NetBridge", lambda: AboutDialog(self).exec())
@@ -372,6 +375,7 @@ class MainWindow(QMainWindow):
         self.profiles = load_profiles()
         self.settings = load_settings()
         self.free_auto_act.setChecked(bool(self.settings.get("free_auto")))
+        _ab.EXTRA_DOH[:] = list(self.settings.get("doh_extra") or [])
         self.free_auto_act.toggled.connect(self._set_free_auto)
         QTimer.singleShot(4000, self._free_auto_check)
         self.view = []; self.worker = None; self.auto_worker = None; self._auto_wins = []; self.pending_best = False; self._done = 0; self._total = 0

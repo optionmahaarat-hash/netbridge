@@ -64,8 +64,11 @@ def doh_works(url, timeout=4.0):
         return False
 
 
+EXTRA_DOH = []          # filled from the resolver scan (settings "doh_extra"); tried before the built-in list
+
+
 def reachable_doh(candidates=None, timeout=4.0, workers=6):
-    cands = list(candidates or DOH_CANDIDATES)
+    cands = list(candidates or (list(EXTRA_DOH) + [u for u in DOH_CANDIDATES if u not in EXTRA_DOH]))
     with ThreadPoolExecutor(max_workers=workers) as ex:
         ok = list(ex.map(lambda u: doh_works(u, timeout), cands))
     return [u for u, good in zip(cands, ok) if good]
