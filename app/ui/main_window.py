@@ -189,6 +189,7 @@ class DeployWorker(QThread):
 
 
 WARP_CHOICES = [("MASQUE IPv4 (default)", "masque", "4"), ("MASQUE IPv6", "masque", "6"),
+                ("MASQUE HTTP/2 IPv4", "masque-h2", "4"), ("MASQUE HTTP/2 IPv6", "masque-h2", "6"),
                 ("WireGuard IPv4", "wg", "4"), ("WireGuard IPv6", "wg", "6"), ("WARP-in-WARP (gool)", "gool", "4")]
 
 
@@ -212,8 +213,11 @@ class AetherWorker(QThread):
                 path, tag = aether_mod.download_core(proxy=self.proxy, progress=self.status.emit)
                 self.status.emit(f"Aether {tag} installed: {path}")
             self.mgr.proxy_env = self.proxy
+            proto, extra = self.protocol, {}
+            if proto == "masque-h2":                       # MASQUE over HTTP/2 only (no QUIC), as in the Hamrah-e-Aval / Irancell guide
+                proto, extra = "masque", {"modes": ("h2",)}
             port = self.mgr.start(cancelled=lambda: self._stop, progress=self.status.emit, kind=self.kind,
-                                 protocol=self.protocol, family=self.family, region=self.region)
+                                 protocol=proto, family=self.family, region=self.region, **extra)
             self.done.emit(port)
         except Exception as e:
             self.done.emit(str(e))
