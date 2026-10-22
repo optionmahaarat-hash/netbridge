@@ -1,6 +1,7 @@
 from pathlib import Path
 from urllib.parse import quote
-from PySide6.QtCore import QTimer, QThread, Signal
+from PySide6.QtCore import QTimer, QThread, Signal, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QPushButton,
     QLabel, QTextEdit, QLineEdit, QMessageBox, QDialog, QFormLayout,
@@ -12,6 +13,7 @@ import time
 from app.core.bypass import PRESETS, CIPHER_SUITES, FM_STANDARD, FM_PATTNG
 from app.core import bypass as bypass_mod, presets as presets_mod, worker_exit
 from app.ui import theme
+from app.core import lantern as lantern_mod
 from app.core import aether as aether_mod, cf_deploy, gscript as gscript_mod, sources as sources_mod
 from app.storage.profiles import load_profiles, save_profiles
 from app.utils.parser import parse_many
@@ -367,6 +369,7 @@ class MainWindow(QMainWindow):
         self.free_auto_act.setCheckable(True)
         tm.addAction("Telegram proxy (my Cloudflare Worker) ...", lambda: self.telegram_proxy())
         tm.addAction("Delete ALL profiles (start with an empty list) ...", lambda: self.delete_all())
+        tm.addAction("Open Lantern (installed separately) ...", lambda: self.open_lantern())
         tm.addAction("DNS resolver finder (UDP / TCP / DoT / DoH) ...", lambda: ResolverDialog(self.settings, save_settings, self).exec())
         hm = self.menuBar().addMenu("&Help")
         hm.addAction("&Guide / راهنما", lambda: HelpDialog(self).exec())
@@ -447,6 +450,8 @@ class MainWindow(QMainWindow):
             self.warp_mode.addItem(label, (proto, fam))
         self.warp_mode.setToolTip("Which WARP transport and IP version Aether uses. If the first one does not connect, try another.")
         r6.addWidget(self.warp_mode)
+        self.lantern_btn = QPushButton("Open Lantern"); self.lantern_btn.setToolTip("Starts your separately installed Lantern (it cannot be built into NetBridge).")
+        self.lantern_btn.clicked.connect(self.open_lantern); r6.addWidget(self.lantern_btn)
         self.deploy_btn = QPushButton("Deploy my Worker (Cloudflare)"); self.deploy_btn.setObjectName("primary")
         self.deploy_btn.clicked.connect(self.deploy_worker); r6.addWidget(self.deploy_btn)
         r7 = QHBoxLayout()
@@ -572,6 +577,22 @@ class MainWindow(QMainWindow):
     def group_changed(self, _):
         self.settings["group"] = self.group_combo.currentData() or ""
         save_settings(self.settings); self.refresh(keep=None)
+
+    def open_lantern(self):
+        """Lantern cannot be built into NetBridge (GPL-3.0); this starts the copy the user installed, or opens its download page."""
+        p = lantern_mod.find()
+        if p:
+            try:
+                lantern_mod.launch(p)
+                QMessageBox.information(self, "Lantern", f"Started: {p}\n\nLantern runs by itself. If it takes over the system proxy, turn off "
+                                        "NetBridge's system proxy first so the two do not fight.")
+                return
+            except Exception as e:
+                QMessageBox.warning(self, "Lantern", f"Could not start {p}:\n{e}")
+                return
+        if QMessageBox.question(self, "Lantern", "Lantern is not installed in the usual places.\n\nOpen its official page "
+                                "to download it? (NetBridge cannot include Lantern because of its licence.)") == QMessageBox.Yes:
+            QDesktopServices.openUrl(QUrl(lantern_mod.PAGE))
 
     def ech_toggled(self, on):
         self.settings["use_ech"] = bool(on)
