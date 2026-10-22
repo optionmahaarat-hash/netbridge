@@ -370,6 +370,7 @@ class MainWindow(QMainWindow):
         tm.addAction("Telegram proxy (my Cloudflare Worker) ...", lambda: self.telegram_proxy())
         tm.addAction("Delete ALL profiles (start with an empty list) ...", lambda: self.delete_all())
         tm.addAction("Open Lantern (installed separately) ...", lambda: self.open_lantern())
+        tm.addAction("Check Lantern local proxy (port test) ...", lambda: self.check_lantern_proxy())
         tm.addAction("DNS resolver finder (UDP / TCP / DoT / DoH) ...", lambda: ResolverDialog(self.settings, save_settings, self).exec())
         hm = self.menuBar().addMenu("&Help")
         hm.addAction("&Guide / راهنما", lambda: HelpDialog(self).exec())
@@ -593,6 +594,21 @@ class MainWindow(QMainWindow):
         if QMessageBox.question(self, "Lantern", "Lantern is not installed in the usual places.\n\nOpen its official page "
                                 "to download it? (NetBridge cannot include Lantern because of its licence.)") == QMessageBox.Yes:
             QDesktopServices.openUrl(QUrl(lantern_mod.PAGE))
+
+    def check_lantern_proxy(self):
+        """Only TESTS a port: old reports say Lantern serves an HTTP proxy on 127.0.0.1:8787, which nobody has confirmed for current versions."""
+        port, ok = QInputDialog.getInt(self, "Lantern proxy test", "Port to test on 127.0.0.1 (start Lantern and connect it first):",
+                                       lantern_mod.GUESS_PORT, 1, 65535)
+        if not ok:
+            return
+        r = lantern_mod.probe_proxy(port)
+        if r["works"]:
+            msg = f"An HTTP proxy on 127.0.0.1:{port} works ({r['ms']} ms). Tell me the port and I can add 'connect through it'."
+        elif r["listening"]:
+            msg = f"Something listens on {port} but it did not carry a test request.\n{r['error']}"
+        else:
+            msg = r["error"] or "Nothing answered."
+        QMessageBox.information(self, "Lantern proxy test", msg)
 
     def ech_toggled(self, on):
         self.settings["use_ech"] = bool(on)

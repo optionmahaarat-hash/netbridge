@@ -38,3 +38,32 @@ def launch(path, popen=subprocess.Popen):
     flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     popen([str(path)], cwd=str(Path(path).parent), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
           stderr=subprocess.DEVNULL, creationflags=flags)
+
+
+# Old, unverified reports say Lantern listens as an HTTP proxy on 127.0.0.1:8787. We never rely on it: this only TESTS a port.
+GUESS_PORT = 8787
+TEST_URL = "http://connectivitycheck.gstatic.com/generate_204"
+
+
+def probe_proxy(port=GUESS_PORT, host="127.0.0.1", timeout=4.0, opener=None):
+    """Tests whether an HTTP proxy answers on host:port (ms) - and whether it really carries a request out (True/False).
+    Returns {"listening": bool, "works": bool, "ms": int|None, "error": str}. Never raises."""
+    import socket
+    import time
+    import urllib.request
+    out = {"listening": False, "works": False, "ms": None, "error": ""}
+    try:
+        socket.create_connection((host, int(port)), timeout=min(timeout, 2.0)).close()
+        out["listening"] = True
+    except OSError as e:
+        out["error"] = f"nothing listens on {host}:{port} ({e.__class__.__name__})"
+        return out
+    try:
+        op = opener or urllib.request.build_opener(urllib.request.ProxyHandler({"http": f"http://{host}:{int(port)}"}))
+        t = time.time()
+        with op.open(urllib.request.Request(TEST_URL, headers={"User-Agent": "NetBridge"}), timeout=timeout) as r:
+            out["works"] = r.status in (200, 204)
+        out["ms"] = int((time.time() - t) * 1000)
+    except Exception as e:
+        out["error"] = f"a port is open but the request failed: {e}"
+    return out
