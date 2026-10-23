@@ -152,11 +152,11 @@ def test_manager_start_missing_exe_and_h3_to_h2_fallback(tmp_path, monkeypatch):
 
     monkeypatch.setattr(m, "_launch", lambda port, mode, **kw: (launched.append((mode, kw)[0]), setattr(m, "process", P())))
     monkeypatch.setattr(aether, "free_port", lambda *a, **k: 1900)
-    ready = lambda port: launched[-1] == "h2"                      # only the HTTP/2 mode comes up
+    ready = lambda port: launched[-1] == "h2"                      # HTTP/2 is tried first and comes up
     t = [0.0]
     monkeypatch.setattr(aether.time, "time", lambda: t[0])
     port = m.start(wait=2, ready=ready, sleep=lambda s: t.__setitem__(0, t[0] + 1))
-    assert port == 1900 and launched == ["h3", "h2"] and m.port == 1900
+    assert port == 1900 and launched == ["h2"] and m.port == 1900
 
 
 def test_manager_error_carries_log_tail(tmp_path, monkeypatch):
@@ -328,3 +328,55 @@ def test_psiphon_tool_ends_up_next_to_the_exe(tmp_path):
     with zf.ZipFile(b, "w") as z:
         z.writestr("aether.exe", b"MZ"); z.writestr("pt/psiphon-tunnel-core.exe", b"PSI"); z.writestr("pt/obfs4proxy.exe", b"O")
     assert aether.extract_pt(b.getvalue(), tmp_path) == 2 and (tmp_path / "pt" / "psiphon-tunnel-core.exe").read_bytes() == b"PSI"
+
+
+# ---------------------------------------------------------------- WhiteAesther-inspired additions
+def test_wom_enroll_address_and_default_h2_first():
+    a = aether.build_args("aether.exe", protocol="wom", mode="h2")
+    assert "--wg-over-masque" in a and "--h2" in a and "--wom" not in a
+    b = aether.build_args("aether.exe", enroll_address="188.114.97.6")
+    assert b[b.index("--enroll-address") + 1] == "188.114.97.6"
+    with pytest.raises(ValueError):
+        aether.build_args("aether.exe", enroll_address="a b;rm")
+    import inspect
+    assert inspect.signature(aether.AetherManager.start).parameters["modes"].default == ("h2", "h3")
+
+
+def test_supported_flags_reads_help_text_and_survives_errors():
+    class R:  # noqa
+        stdout = "Usage: aether [OPTIONS]\n  --ech <v>   x\n  --enroll-address <a>\n  -4\n"; stderr = ""
+    assert aether.supported_flags("x", run=lambda *a, **k: R()) == {"--ech", "--enroll-address"}
+    def boom(*a, **k): raise OSError("no")
+    assert aether.supported_flags("x", run=boom) == set()
+
+
+def test_identity_backup_restore_roundtrip_and_refusals(tmp_path):
+    d = tmp_path / "d"; d.mkdir()
+    assert not aether.identity_exists(d)
+    with pytest.raises(aether.AetherError):
+        aether.backup_identity(tmp_path / "b.toml", d)
+    (d / "aether.toml").write_text('private_key = "abc"\nid = "1234567890123456"\n', encoding="utf-8")
+    aether.backup_identity(tmp_path / "b.toml", d)
+    (d / "aether.toml").write_text('private_key = "NEW"\nid = "99999999999999999"\n', encoding="utf-8")
+    aether.restore_identity(tmp_path / "b.toml", d)
+    assert 'abc' in (d / "aether.toml").read_text() and (d / "aether.toml.bak").exists()
+    (tmp_path / "big.toml").write_bytes(b"a=" + b"x" * 70000)
+    with pytest.raises(aether.AetherError):
+        aether.restore_identity(tmp_path / "big.toml", d)
+    (tmp_path / "bin.toml").write_bytes(b"\x00\x01\x02=")
+    with pytest.raises(aether.AetherError):
+        aether.restore_identity(tmp_path / "bin.toml", d)
+
+
+def test_upstream_without_identity_warns_and_wom_needs_the_flag(tmp_path, monkeypatch):
+    (tmp_path / "a.exe").write_bytes(b"x")
+    m = aether.AetherManager(executable=tmp_path / "a.exe", data_dir=tmp_path / "d")
+    monkeypatch.setattr(aether, "supported_flags", lambda exe, run=None: set())
+    with pytest.raises(aether.AetherError, match="wg-over-masque"):
+        m.start(protocol="wom")
+    m.upstream = "socks5://127.0.0.1:1900"
+    seen = []
+    monkeypatch.setattr(m, "_launch", lambda *a, **k: (_ for _ in ()).throw(aether.AetherError("stop here")))
+    with pytest.raises(aether.AetherError, match="stop here"):
+        m.start(progress=seen.append)
+    assert any("no saved identity" in s for s in seen)

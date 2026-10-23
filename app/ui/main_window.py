@@ -194,7 +194,7 @@ class DeployWorker(QThread):
 
 WARP_CHOICES = [("MASQUE IPv4 (default)", "masque", "4"), ("MASQUE IPv6", "masque", "6"),
                 ("MASQUE HTTP/2 IPv4", "masque-h2", "4"), ("MASQUE HTTP/2 IPv6", "masque-h2", "6"),
-                ("WireGuard IPv4", "wg", "4"), ("WireGuard IPv6", "wg", "6"), ("WARP-in-WARP (gool)", "gool", "4")]
+                ("WireGuard over MASQUE IPv4", "wom", "4"), ("WireGuard IPv4", "wg", "4"), ("WireGuard IPv6", "wg", "6"), ("WARP-in-WARP (gool)", "gool", "4")]
 
 
 PSIPHON_REGIONS = [("Auto", ""), ("Germany", "DE"), ("Netherlands", "NL"), ("United States", "US"), ("United Kingdom", "GB"),
@@ -370,6 +370,8 @@ class MainWindow(QMainWindow):
         tm.addAction("Telegram proxy (my Cloudflare Worker) ...", lambda: self.telegram_proxy())
         tm.addAction("Delete ALL profiles (start with an empty list) ...", lambda: self.delete_all())
         tm.addAction("Open Lantern (installed separately) ...", lambda: self.open_lantern())
+        tm.addAction("Aether identity: save a backup ...", lambda: self.aether_identity("save"))
+        tm.addAction("Aether identity: restore from a backup ...", lambda: self.aether_identity("restore"))
         tm.addAction("Check Lantern local proxy (port test) ...", lambda: self.check_lantern_proxy())
         tm.addAction("DNS resolver finder (UDP / TCP / DoT / DoH) ...", lambda: ResolverDialog(self.settings, save_settings, self).exec())
         hm = self.menuBar().addMenu("&Help")
@@ -482,6 +484,11 @@ class MainWindow(QMainWindow):
             self.noize_combo.addItem(label, v)
         self.noize_combo.setToolTip("WARP / MASQUE obfuscation profile. Try 'gfw' when 'firewall' does not connect. Needs Aether 2.2 or newer.")
         r8.addWidget(self.noize_combo)
+        self.enroll_edit = QLineEdit()
+        self.enroll_edit.setPlaceholderText("WARP registration address (optional, e.g. 188.114.97.6)")
+        self.enroll_edit.setToolTip("Where Aether registers its WARP identity. Use a Cloudflare IP if api.cloudflareclient.com is blocked for you. "
+                                    "Only used when your Aether core lists --enroll-address (2.3 + restricted-network build).")
+        r8.addWidget(self.enroll_edit)
         self.tg_btn = QPushButton("Telegram proxy"); self.tg_btn.clicked.connect(self.telegram_proxy); r8.addWidget(self.tg_btn)
         self.via_chk = QCheckBox("Aether through my current connection")
         self.via_chk.setChecked(True)          # default on: used only when a normal connection is already running
@@ -594,6 +601,25 @@ class MainWindow(QMainWindow):
         if QMessageBox.question(self, "Lantern", "Lantern is not installed in the usual places.\n\nOpen its official page "
                                 "to download it? (NetBridge cannot include Lantern because of its licence.)") == QMessageBox.Yes:
             QDesktopServices.openUrl(QUrl(lantern_mod.PAGE))
+
+    def aether_identity(self, what):
+        """WARP identity (aether.toml). A new registration can be refused for a long time and cannot go through a proxy chain, so keep a copy.
+        The file holds PRIVATE keys: keep it like a password."""
+        try:
+            if what == "save":
+                path, _ = QFileDialog.getSaveFileName(self, "Save the Aether identity", "aether-identity-backup.toml", "TOML (*.toml)")
+                if path:
+                    aether_mod.backup_identity(path)
+                    QMessageBox.information(self, "Aether identity", f"Saved: {path}\n\nIt contains private keys - do not share it.")
+            else:
+                if self.aether.running:
+                    QMessageBox.warning(self, "Aether identity", "Disconnect Aether first."); return
+                path, _ = QFileDialog.getOpenFileName(self, "Restore an Aether identity", "", "TOML (*.toml);;All files (*)")
+                if path:
+                    aether_mod.restore_identity(path)
+                    QMessageBox.information(self, "Aether identity", "Restored. The previous one was kept as aether.toml.bak.")
+        except Exception as e:
+            QMessageBox.warning(self, "Aether identity", str(e))
 
     def check_lantern_proxy(self):
         """Only TESTS a port: old reports say Lantern serves an HTTP proxy on 127.0.0.1:8787, which nobody has confirmed for current versions."""
@@ -982,6 +1008,7 @@ class MainWindow(QMainWindow):
         self.aether.upstream = None
         self.aether.psiphon_mode = self.psi_mode.currentData() if kind.startswith("psiphon") else None
         self.aether.noize = self.noize_combo.currentData() or "firewall"
+        self.aether.enroll_address = (self.enroll_edit.text().strip() or None)
         if self.via_chk.isChecked() and self.xray.running and not self.aether.running:
             port = self.start_feeder()
             if not port:
@@ -1388,7 +1415,7 @@ class MainWindow(QMainWindow):
         save_profiles(self.profiles); self.refresh()
         self.status.setText("Status: " + ("Xray running" if self.xray.running else "Disconnected"))
         if res.get("relaxed_fallback"):
-            self.log.append("AUTO: WARNING - no profile passed the YouTube/Instagram check; the connected one only passed "
+            self.log.append("AUTO: TIP - if YouTube does not open, press WARP with \"MASQUE HTTP/2\" (Aether). WARNING - no profile passed the YouTube/Instagram check; the connected one only passed "
                             "the basic test, so those sites may not open. Try again later or import a fresh subscription.")
         tls_wins = [x for x in self._auto_wins if is_tls(x[0])]
         pool = tls_wins or self._auto_wins
