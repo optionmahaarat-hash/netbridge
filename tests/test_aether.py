@@ -3,6 +3,7 @@ import io
 import json
 import socket
 import threading
+from pathlib import Path
 import zipfile
 
 import pytest
@@ -389,3 +390,26 @@ def test_upstream_without_identity_warns_and_wom_needs_the_flag(tmp_path, monkey
     with pytest.raises(aether.AetherError, match="stop here"):
         m.start(progress=seen.append)
     assert any("no saved identity" in s for s in seen)
+
+
+def test_legacy_nested_identity_is_found_and_moved(tmp_path):
+    from app.core import aether
+    nested = tmp_path / "data" / "aether"
+    nested.mkdir(parents=True)
+    (nested / "aether-masque.toml").write_text('private_key = "x"\nid = "y"\n' * 3)
+    assert aether.identity_exists(tmp_path)
+    assert aether.migrate_legacy_identity(tmp_path) == ["aether-masque.toml"]
+    assert (tmp_path / "aether-masque.toml").exists()
+    assert aether.migrate_legacy_identity(tmp_path) == []          # never overwrites
+
+
+def test_launch_uses_absolute_config_path(tmp_path, monkeypatch):
+    from app.core import aether
+    seen = {}
+    monkeypatch.setattr(aether.subprocess, "Popen", lambda args, **kw: seen.update(args=args, cwd=kw.get("cwd")) or type("P", (), {"stdout": iter(()), "poll": lambda s: None})())
+    monkeypatch.setattr(aether.threading, "Thread", lambda **kw: type("T", (), {"start": lambda s: None})())
+    m = aether.AetherManager(executable=tmp_path / "aether.exe", data_dir=tmp_path / "d")
+    monkeypatch.setattr(aether, "supported_flags", lambda exe, run=None: set())
+    m._launch(1819, "h2")
+    cfg = seen["args"][seen["args"].index("--config") + 1]
+    assert Path(cfg).is_absolute()

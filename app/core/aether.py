@@ -323,13 +323,32 @@ def supported_flags(exe, run=subprocess.run):
 IDENTITY_RE = re.compile(r"^aether[\w-]*\.toml$")          # aether.toml, aether-masque.toml (the log of a real run names this one), aether-wg.toml ...
 
 
+def _scan_identity(d):
+    try:
+        return sorted(p for p in Path(d).iterdir() if p.is_file() and IDENTITY_RE.match(p.name) and p.stat().st_size > 20)
+    except OSError:
+        return []
+
+
+def migrate_legacy_identity(data_dir=None):
+    """Older NetBridge builds passed Aether a RELATIVE --config while running it inside the data folder, so the identity was written to
+    <data>/data/aether/. Moves such files up to <data> (never overwrites one that is already there). Returns the moved names."""
+    d = Path(data_dir or DATA_DIR)
+    moved = []
+    for f in _scan_identity(d / "data" / "aether"):
+        dst = d / f.name
+        if not dst.exists():
+            try:
+                shutil.copyfile(f, dst); moved.append(f.name)
+            except OSError:
+                pass
+    return moved
+
+
 def identity_files(data_dir=None):
     """The identity files Aether keeps in its data folder (one per transport), without backups."""
     d = Path(data_dir or DATA_DIR)
-    try:
-        return sorted(p for p in d.iterdir() if p.is_file() and IDENTITY_RE.match(p.name) and p.stat().st_size > 20)
-    except OSError:
-        return []
+    return _scan_identity(d) or _scan_identity(d / "data" / "aether")
 
 
 def identity_exists(data_dir=None):
@@ -415,13 +434,15 @@ class AetherManager:
 
     def _launch(self, port, mode, tor=None, tor_port=None, protocol="masque", family="4", psiphon=None, psiphon_port=None, region=None):
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        base = self.data_dir.resolve()                           # Aether runs INSIDE this folder: every path it gets must be absolute
+        migrate_legacy_identity(self.data_dir)
         bridge_file = None
         if tor and self.bridges:
-            bridge_file = self.data_dir / "tor_bridges.txt"
+            bridge_file = base / "tor_bridges.txt"
             bridge_file.write_text("\n".join(self.bridges) + "\n", encoding="utf-8")
-        args = build_args(self.executable, port, mode, config=self.data_dir / "aether.toml", tor=tor, tor_port=tor_port,
-                          tor_dir=self.data_dir / "tor", protocol=protocol, family=family,
-                          psiphon=psiphon, psiphon_port=psiphon_port, psiphon_dir=self.data_dir / "psiphon", region=region,
+        args = build_args(self.executable, port, mode, config=base / "aether.toml", tor=tor, tor_port=tor_port,
+                          tor_dir=base / "tor", protocol=protocol, family=family,
+                          psiphon=psiphon, psiphon_port=psiphon_port, psiphon_dir=base / "psiphon", region=region,
                           bridge_file=bridge_file, bridges_now=bool(self.bridges_now and tor), upstream=self.upstream,
                           psiphon_mode=self.psiphon_mode, noize=self.noize,
                           enroll_address=self._enroll_if_supported())
@@ -445,6 +466,9 @@ class AetherManager:
             raise AetherError("Aether is not installed yet")
         self.stop()
         self.last_notice = ""
+        migrate_legacy_identity(self.data_dir)
+        if kind == "warp" and self.upstream:
+            wait = max(wait, 180)                                # the API call retries 4 times (about 20 s each) through a slow upstream
         if protocol == "wom" and "--wg-over-masque" not in supported_flags(self.executable):
             raise AetherError("this Aether build does not list --wg-over-masque (WireGuard over MASQUE). Download the Aether core again (2.3 or newer).")
         if self.upstream and kind in ("warp", "tor", "psiphon") and not identity_exists(self.data_dir):
