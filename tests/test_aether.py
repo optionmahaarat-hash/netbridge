@@ -413,3 +413,13 @@ def test_launch_uses_absolute_config_path(tmp_path, monkeypatch):
     m._launch(1819, "h2")
     cfg = seen["args"][seen["args"].index("--config") + 1]
     assert Path(cfg).is_absolute()
+
+
+def test_kill_strays_only_inside_our_folder_and_only_on_windows(tmp_path, monkeypatch):
+    from app.core import aether
+    m = aether.AetherManager(executable=tmp_path / "cores" / "aether.exe", data_dir=tmp_path / "d")
+    calls = []
+    assert m.kill_strays(run=lambda *a, **k: calls.append(a), windows=False) is False and not calls
+    assert m.kill_strays(run=lambda *a, **k: calls.append(a), windows=True) is True
+    cmd = calls[0][0][-1]
+    assert str(tmp_path / "cores") in cmd and "ExecutablePath" in cmd

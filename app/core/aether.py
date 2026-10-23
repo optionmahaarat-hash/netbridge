@@ -465,6 +465,7 @@ class AetherManager:
         if not self.executable.exists():
             raise AetherError("Aether is not installed yet")
         self.stop()
+        self.kill_strays()
         self.last_notice = ""
         migrate_legacy_identity(self.data_dir)
         if kind == "warp" and self.upstream:
@@ -515,10 +516,31 @@ class AetherManager:
             raise AetherError("the Psiphon program (pt/psiphon-tunnel-core) was not found next to aether.exe. Download the Aether core again. Last output:\n" + tail)
         raise AetherError("Aether did not start. Last output:\n" + tail)
 
+    def kill_strays(self, run=subprocess.run, windows=None):
+        """Windows: a killed aether.exe leaves its child psiphon-tunnel-core.exe running, and that keeps Psiphon's datastore locked
+        ("tryDatastoreOpenDB failed: timeout"). Ends only the copies that live inside OUR Aether folder (another Psiphon app is left alone)."""
+        if not (os.name == "nt" if windows is None else windows):
+            return False
+        folder = str(Path(self.executable).resolve().parent).replace("'", "''")
+        ps = ("Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath -like '" + folder + "*' "
+              "-and $_.Name -ne 'powershell.exe' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }")
+        try:
+            run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True, timeout=20, creationflags=NOWIN,
+                stdin=subprocess.DEVNULL)
+            return True
+        except Exception:
+            return False
+
     def stop(self):
         proc, self.process = self.process, None
         self.port = None
         self.kind = None
+        if proc and proc.poll() is None and os.name == "nt":
+            try:                                                 # the whole tree: aether.exe AND the engines it started
+                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=10, creationflags=NOWIN,
+                               stdin=subprocess.DEVNULL)
+            except Exception:
+                pass
         if proc and proc.poll() is None:
             proc.terminate()
             try:
