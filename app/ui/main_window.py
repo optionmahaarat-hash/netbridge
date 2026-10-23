@@ -479,6 +479,9 @@ class MainWindow(QMainWindow):
             self.psi_mode.addItem(label, v)
         self.psi_mode.setToolTip("If Psiphon cannot start on your network, try 'CDN-fronted only' (it hides behind a CDN). Needs Aether 2.2 or newer.")
         r8.addWidget(self.psi_mode)
+        self.psicdn_btn = QPushButton("Psiphon CDN (alone)")
+        self.psicdn_btn.setToolTip("Psiphon hidden behind a CDN, started on its own: it does not use the current connection (weak profiles would only slow it). Wait up to 7 minutes.")
+        self.psicdn_btn.clicked.connect(lambda: self.warp_aether("psiphon-only", cdn=True)); r8.addWidget(self.psicdn_btn)
         self.noize_combo = QComboBox()
         for label, v in (("Obfuscation: firewall (balanced)", "firewall"), ("Obfuscation: gfw (heavier)", "gfw")):
             self.noize_combo.addItem(label, v)
@@ -982,7 +985,7 @@ class MainWindow(QMainWindow):
                             else "Tor bridges: none saved - Aether finds bridges by itself.")
 
     # ---------- WARP through the Aether core ----------
-    def warp_aether(self, kind="warp"):
+    def warp_aether(self, kind="warp", cdn=False):
         """kind: "warp", "tor" (Tor carried inside WARP) or "tor-only" (plain Tor, bridges when blocked)."""
         if getattr(self, "aetherw", None) and self.aetherw.isRunning():
             if QMessageBox.question(self, "Aether", "Aether is still starting (Tor / Psiphon can take a few minutes).\n\n"
@@ -1007,10 +1010,10 @@ class MainWindow(QMainWindow):
                     "checked with its SHA-256 and kept in cores/aether/. Continue?") != QMessageBox.Yes:
                 return
         self.aether.upstream = None
-        self.aether.psiphon_mode = self.psi_mode.currentData() if kind.startswith("psiphon") else None
+        self.aether.psiphon_mode = "cdn" if cdn else (self.psi_mode.currentData() if kind.startswith("psiphon") else None)
         self.aether.noize = self.noize_combo.currentData() or "firewall"
         self.aether.enroll_address = (self.enroll_edit.text().strip() or None)
-        if self.via_chk.isChecked() and self.xray.running and not self.aether.running:
+        if not cdn and self.via_chk.isChecked() and self.xray.running and not self.aether.running:
             port = self.start_feeder()
             if not port:
                 return
@@ -1020,7 +1023,7 @@ class MainWindow(QMainWindow):
                 # but they can use an HTTP one - and that call is what a filtered network resets ("TLS handshake failed unexpected EOF").
                 self.aether.upstream = f"http://127.0.0.1:{self._feeder_http}"
             self.log.append(f"Aether will dial through your current connection ({self.aether.upstream}).")
-        elif self.via_chk.isChecked():
+        elif not cdn and self.via_chk.isChecked():
             self.log.append("No normal connection is running, so Aether starts directly (connect AUTO first if it cannot start).")
         self.log.append(f"Aether ({kind}): starting - the buttons stay active; press one again to cancel.")
         proto, fam = self.warp_mode.currentData() if kind == "warp" else ("masque", "4")
@@ -1143,7 +1146,7 @@ class MainWindow(QMainWindow):
         return f"http://127.0.0.1:{self.http_port}" if self.xray.running else None
 
     def _warp_ready(self, result):
-        for b in (self.warp_btn, self.tor_btn, self.toronly_btn, self.psi_btn, self.psionly_btn):
+        for b in (self.warp_btn, self.tor_btn, self.toronly_btn, self.psi_btn, self.psionly_btn, self.psicdn_btn):
             b.setEnabled(True)
         kind = getattr(self, "_aether_kind", "warp")
         if not isinstance(result, int):
