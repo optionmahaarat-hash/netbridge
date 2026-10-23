@@ -354,18 +354,27 @@ def test_identity_backup_restore_roundtrip_and_refusals(tmp_path):
     d = tmp_path / "d"; d.mkdir()
     assert not aether.identity_exists(d)
     with pytest.raises(aether.AetherError):
-        aether.backup_identity(tmp_path / "b.toml", d)
-    (d / "aether.toml").write_text('private_key = "abc"\nid = "1234567890123456"\n', encoding="utf-8")
-    aether.backup_identity(tmp_path / "b.toml", d)
-    (d / "aether.toml").write_text('private_key = "NEW"\nid = "99999999999999999"\n', encoding="utf-8")
-    aether.restore_identity(tmp_path / "b.toml", d)
-    assert 'abc' in (d / "aether.toml").read_text() and (d / "aether.toml.bak").exists()
+        aether.backup_identity(tmp_path / "b.zip", d)
+    (d / "aether-masque.toml").write_text('private_key = "abc"\nid = "1234567890123456"\n', encoding="utf-8")   # the name a real run uses
+    (d / "aether-wg.toml").write_text('private_key = "wg"\nid = "1234567890123456"\n', encoding="utf-8")
+    (d / "aether-masque.toml.bak").write_text("old", encoding="utf-8")                                          # backups are not identities
+    (d / "other.toml").write_text("x=1" * 20, encoding="utf-8")
+    assert [p.name for p in aether.identity_files(d)] == ["aether-masque.toml", "aether-wg.toml"]
+    aether.backup_identity(tmp_path / "b.zip", d)
+    (d / "aether-masque.toml").write_text('private_key = "NEW"\nid = "99999999999999999"\n', encoding="utf-8")
+    assert sorted(aether.restore_identity(tmp_path / "b.zip", d)) == ["aether-masque.toml", "aether-wg.toml"]
+    assert 'abc' in (d / "aether-masque.toml").read_text() and (d / "aether-masque.toml.bak").read_text().startswith("private_key = \"NEW\"")
     (tmp_path / "big.toml").write_bytes(b"a=" + b"x" * 70000)
     with pytest.raises(aether.AetherError):
         aether.restore_identity(tmp_path / "big.toml", d)
     (tmp_path / "bin.toml").write_bytes(b"\x00\x01\x02=")
     with pytest.raises(aether.AetherError):
         aether.restore_identity(tmp_path / "bin.toml", d)
+    import zipfile
+    with zipfile.ZipFile(tmp_path / "evil.zip", "w") as z:
+        z.writestr("../evil.toml", "a=1"); z.writestr("notes.txt", "a=1")
+    with pytest.raises(aether.AetherError):                    # path tricks and foreign names are never written
+        aether.restore_identity(tmp_path / "evil.zip", d)
 
 
 def test_upstream_without_identity_warns_and_wom_needs_the_flag(tmp_path, monkeypatch):

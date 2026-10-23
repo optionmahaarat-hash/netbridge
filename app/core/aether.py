@@ -320,40 +320,58 @@ def supported_flags(exe, run=subprocess.run):
 # ------------------------------------------------------------------ the WARP identity (aether.toml)
 # Aether registers once and keeps the keys in aether.toml. A new registration can be refused (429) for a long time, and through a
 # proxy chain it cannot be made at all (WhiteAesther's field notes), so the file is worth keeping safe. It holds PRIVATE keys.
-def identity_path(data_dir=None):
-    return Path(data_dir or DATA_DIR) / "aether.toml"
+IDENTITY_RE = re.compile(r"^aether[\w-]*\.toml$")          # aether.toml, aether-masque.toml (the log of a real run names this one), aether-wg.toml ...
+
+
+def identity_files(data_dir=None):
+    """The identity files Aether keeps in its data folder (one per transport), without backups."""
+    d = Path(data_dir or DATA_DIR)
+    try:
+        return sorted(p for p in d.iterdir() if p.is_file() and IDENTITY_RE.match(p.name) and p.stat().st_size > 20)
+    except OSError:
+        return []
 
 
 def identity_exists(data_dir=None):
-    p = identity_path(data_dir)
-    try:
-        return p.is_file() and p.stat().st_size > 20
-    except OSError:
-        return False
+    return bool(identity_files(data_dir))
 
 
 def backup_identity(dest, data_dir=None):
-    """Copies aether.toml to dest. Raises AetherError when there is no identity yet."""
-    if not identity_exists(data_dir):
+    """Writes every identity file into one .zip. Raises AetherError when there is no identity yet."""
+    files = identity_files(data_dir)
+    if not files:
         raise AetherError("there is no Aether identity yet - connect WARP once first")
-    shutil.copyfile(identity_path(data_dir), dest)
+    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in files:
+            z.write(f, f.name)
     return Path(dest)
 
 
 def restore_identity(src, data_dir=None):
-    """Puts a backup back as aether.toml (the current one is kept as aether.toml.bak). Only small text files are accepted."""
+    """Puts a backup (.zip made by backup_identity, or one .toml file) back; files it replaces are kept as *.bak.
+    Only small files whose names look like Aether identity files are accepted."""
     src = Path(src)
-    if not src.is_file() or src.stat().st_size > 64 * 1024:
-        raise AetherError("that is not an Aether identity backup (too large or missing)")
-    text = src.read_text(encoding="utf-8", errors="replace")
-    if "\x00" in text or "=" not in text:
-        raise AetherError("that does not look like an Aether identity file")
-    dst = identity_path(data_dir)
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    if dst.exists():
-        shutil.copyfile(dst, str(dst) + ".bak")
-    shutil.copyfile(src, dst)
-    return dst
+    d = Path(data_dir or DATA_DIR)
+    if not src.is_file():
+        raise AetherError("that file does not exist")
+    items = []
+    if zipfile.is_zipfile(src):
+        with zipfile.ZipFile(src) as z:
+            for i in z.infolist():
+                if IDENTITY_RE.match(i.filename) and 0 < i.file_size <= 64 * 1024:
+                    items.append((i.filename, z.read(i)))
+    elif src.stat().st_size <= 64 * 1024:
+        items.append((src.name if IDENTITY_RE.match(src.name) else "aether.toml", src.read_bytes()))
+    items = [(n, c) for n, c in items if b"\x00" not in c and b"=" in c]
+    if not items:
+        raise AetherError("that does not look like an Aether identity backup")
+    d.mkdir(parents=True, exist_ok=True)
+    for name, content in items:
+        dst = d / name
+        if dst.exists():
+            shutil.copyfile(dst, str(dst) + ".bak")
+        dst.write_bytes(content)
+    return [n for n, _ in items]
 
 
 class AetherManager:
@@ -447,6 +465,8 @@ class AetherManager:
             self._launch(port, mode, tor=kind if kind.startswith("tor") else None, tor_port=side_port if kind == "tor" else None,
                          protocol=protocol, family=family, psiphon=kind if kind.startswith("psiphon") else None,
                          psiphon_port=side_port if kind == "psiphon" else None, region=region)
+            if self.last_notice:
+                progress(self.last_notice); self.last_notice = ""
             proc = self.process
             end = time.time() + wait
             check = ready if (ready is not socks_ready or kind == "warp") else socks_tunnel_ok

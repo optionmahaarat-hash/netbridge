@@ -607,17 +607,17 @@ class MainWindow(QMainWindow):
         The file holds PRIVATE keys: keep it like a password."""
         try:
             if what == "save":
-                path, _ = QFileDialog.getSaveFileName(self, "Save the Aether identity", "aether-identity-backup.toml", "TOML (*.toml)")
+                path, _ = QFileDialog.getSaveFileName(self, "Save the Aether identity", "aether-identity-backup.zip", "ZIP (*.zip)")
                 if path:
                     aether_mod.backup_identity(path)
                     QMessageBox.information(self, "Aether identity", f"Saved: {path}\n\nIt contains private keys - do not share it.")
             else:
                 if self.aether.running:
                     QMessageBox.warning(self, "Aether identity", "Disconnect Aether first."); return
-                path, _ = QFileDialog.getOpenFileName(self, "Restore an Aether identity", "", "TOML (*.toml);;All files (*)")
+                path, _ = QFileDialog.getOpenFileName(self, "Restore an Aether identity", "", "Backups (*.zip *.toml);;All files (*)")
                 if path:
                     aether_mod.restore_identity(path)
-                    QMessageBox.information(self, "Aether identity", "Restored. The previous one was kept as aether.toml.bak.")
+                    QMessageBox.information(self, "Aether identity", "Restored. Replaced files were kept as *.bak.")
         except Exception as e:
             QMessageBox.warning(self, "Aether identity", str(e))
 
@@ -962,6 +962,7 @@ class MainWindow(QMainWindow):
             sp = aether_mod.free_port(1900)
             hp = aether_mod.free_port(sp + 1)
             feeder_mod.make_feeder_config(self.active_config, Path("configs/feeder.json"), sp, hp)
+            self._feeder_http = hp
             self.feeder.start(Path("configs/feeder.json"))
             for _ in range(40):
                 if aether_mod.socks_ready(sp):
@@ -1014,6 +1015,10 @@ class MainWindow(QMainWindow):
             if not port:
                 return
             self.aether.upstream = feeder_mod.upstream_url(port)
+            if kind == "warp" and getattr(self, "_feeder_http", None):
+                # WARP's own API calls (api.cloudflareclient.com) cannot use a SOCKS upstream (the engine has no SOCKS support there),
+                # but they can use an HTTP one - and that call is what a filtered network resets ("TLS handshake failed unexpected EOF").
+                self.aether.upstream = f"http://127.0.0.1:{self._feeder_http}"
             self.log.append(f"Aether will dial through your current connection ({self.aether.upstream}).")
         elif self.via_chk.isChecked():
             self.log.append("No normal connection is running, so Aether starts directly (connect AUTO first if it cannot start).")
