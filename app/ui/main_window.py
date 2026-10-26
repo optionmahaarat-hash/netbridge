@@ -197,6 +197,15 @@ WARP_CHOICES = [("MASQUE IPv4 (default)", "masque", "4"), ("MASQUE IPv6", "masqu
                 ("WireGuard over MASQUE IPv4", "wom", "4"), ("WireGuard IPv4", "wg", "4"), ("WireGuard IPv6", "wg", "6"), ("WARP-in-WARP (gool)", "gool", "4")]
 
 
+SCAN_CHOICES = [("Scan: Turbo (fastest)", "turbo"), ("Scan: Balanced", "balanced"), ("Scan: Thorough (best ping)", "thorough"),
+                ("Scan: Stealth", "stealth"), ("Scan: Ironclad (slowest, most certain)", "ironclad")]
+
+
+def warp_transport(proto):
+    """(protocol, modes) for a WARP_CHOICES value: 'masque-h2' is MASQUE over HTTP/2 only."""
+    return ("masque", ("h2",)) if proto == "masque-h2" else (proto, ("h2", "h3"))
+
+
 PSIPHON_REGIONS = [("Auto", ""), ("Germany", "DE"), ("Netherlands", "NL"), ("United States", "US"), ("United Kingdom", "GB"),
                    ("France", "FR"), ("Canada", "CA"), ("Sweden", "SE"), ("Japan", "JP"), ("Singapore", "SG")]
 
@@ -223,6 +232,27 @@ class AetherWorker(QThread):
             port = self.mgr.start(cancelled=lambda: self._stop, progress=self.status.emit, kind=self.kind,
                                  protocol=proto, family=self.family, region=self.region, **extra)
             self.done.emit(port)
+        except Exception as e:
+            self.done.emit(str(e))
+
+
+class AetherScanWorker(QThread):
+    """'Scan endpoint': installs the Aether core when it is missing, then runs one fresh scan and keeps the gateway it names."""
+    status = Signal(str)
+    done = Signal(object)                      # (endpoint, mode) or an error text
+    def __init__(self, manager, proxy, protocol, family, parent=None):
+        super().__init__(parent); self.mgr, self.proxy, self.protocol, self.family, self._stop = manager, proxy, protocol, family, False
+    def stop(self):
+        self._stop = True
+    def run(self):
+        try:
+            if not aether_mod.installed():
+                path, tag = aether_mod.download_core(proxy=self.proxy, progress=self.status.emit)
+                self.status.emit(f"Aether {tag} installed: {path}")
+            self.mgr.proxy_env = self.proxy
+            proto, modes = warp_transport(self.protocol)
+            self.done.emit(self.mgr.scan_endpoint(cancelled=lambda: self._stop, progress=self.status.emit, protocol=proto,
+                                                  family=self.family, modes=modes))
         except Exception as e:
             self.done.emit(str(e))
 
@@ -466,6 +496,25 @@ class MainWindow(QMainWindow):
         self.free_btn = QPushButton("Get free configs"); self.free_btn.setObjectName("primary"); self.free_btn.clicked.connect(self.get_free_configs)
         r7.addWidget(self.free_btn)
         b = QPushButton("Help / راهنما"); b.clicked.connect(lambda: HelpDialog(self).exec()); r7.addWidget(b)
+        r9 = QHBoxLayout()
+        self.warp_scan = QComboBox()
+        for label, val in SCAN_CHOICES:
+            self.warp_scan.addItem(label, val)
+        self.warp_scan.setToolTip("How Aether looks for a working gateway. Turbo takes the first answer; Thorough looks for the best ping; "
+                                  "Ironclad opens a real tunnel to each candidate (slowest). If Turbo connects but is unstable, try Ironclad.")
+        r9.addWidget(self.warp_scan)
+        self.scanep_btn = QPushButton("Scan endpoint")
+        self.scanep_btn.setToolTip("Runs one fresh Aether scan with the transport, IP version and scan mode chosen above, then remembers the gateway "
+                                   "it picked. Later WARP starts use it at once instead of scanning. Press again to cancel a running scan.")
+        self.scanep_btn.clicked.connect(self.scan_endpoint); r9.addWidget(self.scanep_btn)
+        self.unpin_btn = QPushButton("Unpin")
+        self.unpin_btn.setToolTip("Forget the remembered gateways: Aether scans (or uses its own last-gateway cache) again.")
+        self.unpin_btn.clicked.connect(self.unpin_endpoints); r9.addWidget(self.unpin_btn)
+        self.newkey_btn = QPushButton("New WARP key")
+        self.newkey_btn.setToolTip("Moves the current WARP identity aside (a .bak copy stays) so the next Aether start registers a fresh device. "
+                                   "Use it when the connection is throttled or the old key stopped working. A new registration can be refused for "
+                                   "a long time: save a backup first (Tools menu) if the key still works for you.")
+        self.newkey_btn.clicked.connect(self.new_warp_key); r9.addWidget(self.newkey_btn)
         r8 = QHBoxLayout()
         self.psi_btn = QPushButton("Psiphon via WARP"); self.psi_btn.clicked.connect(lambda: self.warp_aether("psiphon")); r8.addWidget(self.psi_btn)
         self.psionly_btn = QPushButton("Psiphon alone"); self.psionly_btn.clicked.connect(lambda: self.warp_aether("psiphon-only")); r8.addWidget(self.psionly_btn)
@@ -498,7 +547,7 @@ class MainWindow(QMainWindow):
         self.via_chk.setToolTip("When Psiphon / Tor / WARP cannot start on their own, connect to a profile that works first, tick this and press the Aether button: "
                                 "Aether then dials through that connection.")
         r8.addWidget(self.via_chk)
-        ll.addLayout(r_auto); ll.addLayout(r3); ll.addLayout(r4); ll.addLayout(r5); ll.addLayout(r6); ll.addLayout(r7); ll.addLayout(r8)
+        ll.addLayout(r_auto); ll.addLayout(r3); ll.addLayout(r4); ll.addLayout(r5); ll.addLayout(r6); ll.addLayout(r7); ll.addLayout(r8); ll.addLayout(r9)
         splitter.addWidget(left)
 
         right = QWidget(); rl = QVBoxLayout(right)
@@ -604,6 +653,57 @@ class MainWindow(QMainWindow):
         if QMessageBox.question(self, "Lantern", "Lantern is not installed in the usual places.\n\nOpen its official page "
                                 "to download it? (NetBridge cannot include Lantern because of its licence.)") == QMessageBox.Yes:
             QDesktopServices.openUrl(QUrl(lantern_mod.PAGE))
+
+    def scan_endpoint(self):
+        if getattr(self, "scanw", None) and self.scanw.isRunning():
+            self.scanw.stop(); self.log.append("Aether: cancelling the scan ..."); return
+        if self.aether.running or (getattr(self, "aetherw", None) and self.aetherw.isRunning()):
+            QMessageBox.information(self, "Aether", "Disconnect Aether first (or wait until it has started), then scan for an endpoint.")
+            return
+        if not aether_mod.installed() and QMessageBox.question(self, "Aether core",
+                "The scan needs the separate open-source program Aether (AGPL-3.0, github.com/CluvexStudio/Aether).\n\n"
+                "It is downloaded from its official GitHub releases, checked with its SHA-256 and kept in cores/aether/. Continue?") != QMessageBox.Yes:
+            return
+        proto, fam = self.warp_mode.currentData()
+        self.aether.scan = self.warp_scan.currentData() or "turbo"
+        self.aether.noize = self.noize_combo.currentData() or "firewall"
+        self.log.append("Aether: scanning for an endpoint - this can take a few minutes. Press 'Scan endpoint' again to cancel.")
+        self.scanw = AetherScanWorker(self.aether, self.proxy_url_for_download(), proto, fam, self)
+        self.scanw.status.connect(self.log.append)
+        self.scanw.done.connect(self._scan_done)
+        self.scanw.start()
+
+    def _scan_done(self, result):
+        if not isinstance(result, tuple):
+            if str(result) == "cancelled":
+                self.log.append("Aether: scan cancelled."); return
+            QMessageBox.warning(self, "Aether", str(result)); return
+        ep, mode = result
+        proto = warp_transport(self.warp_mode.currentData()[0])[0]
+        self.log.append(f"Aether: endpoint found: {ep}" + (f" (HTTP/{'3' if mode == 'h3' else '2'})" if proto in ("masque", "wom") else "")
+                        + ". Saved: the next WARP start with these settings uses it without scanning.")
+
+    def unpin_endpoints(self):
+        n = self.aether.clear_pins()
+        self.log.append(f"Aether: {n} remembered endpoint(s) removed." if n else "Aether: no remembered endpoint.")
+
+    def new_warp_key(self):
+        if getattr(self, "aetherw", None) and self.aetherw.isRunning():
+            QMessageBox.information(self, "Aether", "Aether is still starting. Press its button again to cancel, then ask for a new key.")
+            return
+        if not aether_mod.identity_exists(self.aether.data_dir):
+            QMessageBox.information(self, "Aether", "There is no saved WARP key yet: the next Aether start registers one by itself.")
+            return
+        msg = "Get a new WARP key?\n\nThe current identity is moved aside (a .bak copy is kept) and the next WARP start registers a fresh device."
+        if self.aether.running:
+            msg += "\n\nAether is running now: it will be stopped and the connection through it ends."
+        if QMessageBox.question(self, "New WARP key", msg) != QMessageBox.Yes:
+            return
+        try:
+            n = self.aether.new_key()
+        except OSError as e:
+            QMessageBox.warning(self, "Aether", f"Could not move the old key: {e}"); return
+        self.log.append(f"Aether: {n} identity file(s) moved aside. Press 'WARP (Aether core)' to register a new key.")
 
     def aether_identity(self, what):
         """WARP identity (aether.toml). A new registration can be refused for a long time and cannot go through a proxy chain, so keep a copy.
@@ -1027,6 +1127,13 @@ class MainWindow(QMainWindow):
             self.log.append("No normal connection is running, so Aether starts directly (connect AUTO first if it cannot start).")
         self.log.append(f"Aether ({kind}): starting - the buttons stay active; press one again to cancel.")
         proto, fam = self.warp_mode.currentData() if kind == "warp" else ("masque", "4")
+        self.aether.scan = self.warp_scan.currentData() or "turbo"
+        wp, wmodes = warp_transport(proto)
+        pin = next((self.aether.pin_for(wp, m, fam) for m in wmodes if self.aether.pin_for(wp, m, fam)), None)
+        if pin and kind not in ("tor-only", "psiphon-only"):
+            self.log.append(f"Aether will use the remembered endpoint {pin} instead of scanning (press 'Unpin' to scan again).")
+        if not aether_mod.identity_exists(self.aether.data_dir):
+            self.log.append("Aether: no WARP key yet - it will be registered on this start (the registration call is sent fragmented).")
         self.aetherw = AetherWorker(self.aether, self.proxy_url_for_download(), kind, self, protocol=proto, family=fam,
                                   region=(self.psi_region.currentData() or None) if kind.startswith("psiphon") else None)
         self.aetherw.status.connect(self.log.append)
@@ -1161,7 +1268,9 @@ class MainWindow(QMainWindow):
             self.profiles.append(p)
         p["port"] = result
         save_profiles(self.profiles); self.refresh(keep=p)
-        self.log.append(f"Aether ({kind}) is ready: SOCKS5 127.0.0.1:{result}. Connecting through it ...")
+        gw = self.aether.endpoint
+        self.log.append(f"Aether ({kind}) is ready: SOCKS5 127.0.0.1:{result}."
+                        + (f" Gateway: {gw[0]}" + (f" -> {gw[1]}" if gw[1] else "") + "." if gw else "") + " Connecting through it ...")
         self.connect_(profile=p)
 
     def disconnect_(self):

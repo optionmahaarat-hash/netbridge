@@ -176,6 +176,46 @@ MODES = ("warp", "tor", "tor-only", "psiphon", "psiphon-only")      # warp = WAR
 SIDE_KINDS = ("tor", "psiphon")                                      # these have a second proxy port: that one is NetBridge's
 ONLY_KINDS = ("tor-only", "psiphon-only")                            # these have no tunnel at all: the --bind port is the proxy
 REGION_RE = re.compile(r"^[A-Za-z]{2}$")
+SCAN_MODES = ("turbo", "balanced", "thorough", "stealth", "ironclad")   # Aether's --scan values: turbo = fastest, ironclad = slowest but most certain
+WG_NOIZE = {"firewall": "balanced", "gfw": "aggressive"}                # WireGuard / classic gool have their own profile names (balanced/aggressive/light/off)
+
+# What Aether's log says when it has picked a gateway (the same lines PattN's scanner reads). A line may carry colour codes and a
+# '[2026-.. INFO  aether::prober]' header in front; the patterns do not care.
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_NS = r"(\S+)"
+ENDPOINT_PATTERNS = (
+    re.compile(r"selected MASQUE gateway " + _NS),
+    re.compile(r"selected WireGuard endpoint " + _NS),
+    re.compile(r"gool ready: masque " + _NS + r" carries wireguard " + _NS),
+    re.compile(r"using cloudflare edge " + _NS + r" \(outer\) and " + _NS + r" \(inner\)"),
+)
+PEER_RE = re.compile(r"^(?:\[[0-9a-fA-F:.]+\]|[0-9.]+):\d{1,5}$")        # 1.2.3.4:443 or [2606:4700::1]:443
+
+
+def normalize_endpoint(text):
+    """'ip:port' or '[v6]:port' as Aether accepts it. A bare IPv6 with a port at the end (2606:4700::1:443), which the log may print,
+    gets its brackets. None when it is not an endpoint."""
+    t = (text or "").strip().strip(",;")
+    if PEER_RE.match(t):
+        return t
+    host, sep, port = t.rpartition(":")
+    if sep and host.count(":") >= 2 and port.isdigit() and 0 < int(port) < 65536 and re.fullmatch(r"[0-9a-fA-F:]+", host):
+        return f"[{host}]:{port}"
+    return None
+
+
+def parse_endpoint(line):
+    """The gateway/endpoint an Aether log line names: (endpoint, inner_or_None), or None when the line names none."""
+    line = ANSI_RE.sub("", line or "")
+    for rx in ENDPOINT_PATTERNS:
+        m = rx.search(line)
+        if m:
+            first = normalize_endpoint(m.group(1))
+            if first is None:
+                return None
+            inner = normalize_endpoint(m.group(2)) if rx.groups > 1 else None
+            return first, inner
+    return None
 
 
 BRIDGE_TRANSPORTS = ("obfs4", "snowflake", "meek", "meek_lite", "webtunnel", "scramblesuit", "conjure")
@@ -205,7 +245,7 @@ def parse_bridges(text):
 
 def build_args(exe, port=DEFAULT_PORT, mode="h3", config=None, protocol="masque", tor=None, tor_port=None, tor_dir=None, family="4",
                psiphon=None, psiphon_port=None, psiphon_dir=None, region=None, bridge_file=None, bridges_now=False, upstream=None,
-               psiphon_mode=None, noize="firewall", enroll_address=None):
+               psiphon_mode=None, noize="firewall", enroll_address=None, scan="turbo", peer=None, quick_reconnect=True, fragment_api=False):
     """Command line. Every choice is given as a flag, because a flag suppresses that question (Aether asks interactively otherwise).
     family: which gateway addresses to scan: "4" (IPv4), "6" (IPv6) or "dual". Some networks only let IPv6 through.
     mode: "h3" = MASQUE over HTTP/3 (default), "h2" = MASQUE over HTTP/2 with ClientHello fragmentation (when UDP/QUIC is blocked).
@@ -230,14 +270,24 @@ def build_args(exe, port=DEFAULT_PORT, mode="h3", config=None, protocol="masque"
         raise ValueError("psiphon_mode must be None, 'cdn' (fronted meek only) or 'direct' (fronting off)")
     if noize not in ("firewall", "gfw"):
         raise ValueError("noize must be 'firewall' (balanced) or 'gfw' (heavier, for severe filtering)")
+    if scan not in SCAN_MODES:
+        raise ValueError("scan must be one of " + ", ".join(SCAN_MODES))
+    if peer is not None and not PEER_RE.match(peer):
+        raise ValueError("peer must look like 1.2.3.4:443 or [2606:4700::1]:443")
     if tor == "tor-only":
         args = [str(exe), "--bind", f"127.0.0.1:{int(port)}", "--tor-only"]
     elif psiphon == "psiphon-only":
         args = [str(exe), "--bind", f"127.0.0.1:{int(port)}", "--psiphon-only"]
     else:
-        args = [str(exe), "--bind", f"127.0.0.1:{int(port)}", {"4": "-4", "6": "-6", "dual": "--dual"}[family], ("--wg-over-masque" if protocol == "wom" else f"--{protocol}"), "--turbo", "--noize", noize, "--quick-reconnect"]
+        args = [str(exe), "--bind", f"127.0.0.1:{int(port)}", {"4": "-4", "6": "-6", "dual": "--dual"}[family], ("--wg-over-masque" if protocol == "wom" else f"--{protocol}"), f"--{scan}",
+                "--noize", WG_NOIZE[noize] if protocol == "wg" else noize,          # 'firewall'/'gfw' are MASQUE profiles; WireGuard has its own names
+                "--quick-reconnect" if quick_reconnect else "--no-quick-reconnect"]
         if protocol in ("masque", "wom") and mode == "h2":
             args += ["--h2", "--fragment"]
+        elif fragment_api:                                           # no identity yet: the WARP registration call is the one filters block;
+            args += ["--fragment"]                                   # --fragment also splits the ClientHello of those API calls (Aether guide)
+        if peer:
+            args += ["--peer", peer]                                 # a pinned gateway: Aether skips scanning
         if tor == "tor":
             args += ["--tor", "--tor-bind", f"127.0.0.1:{int(tor_port or port + 1)}"]
         if psiphon == "psiphon":
@@ -407,6 +457,8 @@ class AetherManager:
         self.enroll_address = None            # WARP registration address (host or IP[:port]); only passed if this Aether lists --enroll-address
         self.last_notice = ""
         self.noize = "firewall"               # "gfw" = the heavier obfuscation profile for severe filtering (Aether >= 2.2)
+        self.scan = "turbo"                   # one of SCAN_MODES
+        self.endpoint = None                  # the gateway Aether's log last named: (endpoint, inner_or_None) - see parse_endpoint
         self._lines = []
         self._lock = threading.Lock()
 
@@ -420,9 +472,101 @@ class AetherManager:
 
     def _pump(self, proc):
         for line in proc.stdout:
+            found = parse_endpoint(line)
             with self._lock:
                 self._lines.append(line.rstrip())
                 del self._lines[:-200]
+                if found and self.process is proc:
+                    self.endpoint = found
+
+    # ---- pinned gateways: "Scan endpoint" saves what it found, the next starts give it to Aether as --peer (no scan) ----
+    @staticmethod
+    def pin_key(protocol, mode, family):
+        return f"{protocol}-{mode if protocol in ('masque', 'wom') else 'x'}-{family}"
+
+    def _pins_path(self):
+        return self.data_dir / "pinned_endpoints.json"
+
+    def pins(self):
+        try:
+            d = json.loads(self._pins_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return {k: v for k, v in d.items() if isinstance(k, str) and isinstance(v, str) and PEER_RE.match(v)} if isinstance(d, dict) else {}
+
+    def pin_for(self, protocol, mode, family):
+        return self.pins().get(self.pin_key(protocol, mode, family))
+
+    def set_pin(self, protocol, mode, family, endpoint):
+        if not PEER_RE.match(endpoint or ""):
+            raise ValueError("not an endpoint: %r" % (endpoint,))
+        d = self.pins(); d[self.pin_key(protocol, mode, family)] = endpoint
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self._pins_path().write_text(json.dumps(d, indent=1), encoding="utf-8")
+
+    def clear_pins(self):
+        n = len(self.pins())
+        try:
+            self._pins_path().unlink()
+        except OSError:
+            pass
+        return n
+
+    def new_key(self):
+        """'New WARP key': stops Aether and moves the identity files aside (name.toml -> name.toml.bak; an older .bak is replaced). The next
+        start registers a fresh device by itself. The *-lastconn.toml gateway caches are not identity and stay. Returns the number moved."""
+        if self.running:
+            self.stop()
+        n = 0
+        for f in identity_files(self.data_dir):
+            if f.name.lower().endswith("-lastconn.toml"):
+                continue
+            bak = f.with_name(f.name + ".bak")
+            if bak.exists():
+                bak.unlink()
+            f.rename(bak); n += 1
+        return n
+
+    def scan_endpoint(self, wait=240, cancelled=lambda: False, progress=lambda s: None, sleep=time.sleep,
+                      modes=("h2", "h3"), protocol="masque", family="4", save=True):
+        """'Scan endpoint': runs Aether with a fresh scan (no pin, no cache) until its log names the gateway it selected, then stops it.
+        The result is saved as a pin for (protocol, mode, family) so later starts use it with --peer. MASQUE tries the given modes in order.
+        Returns (endpoint, mode). Raises AetherError."""
+        if not self.executable.exists():
+            raise AetherError("Aether is not installed yet")
+        if protocol not in ("masque", "wg", "gool", "wom"):
+            raise ValueError("protocol must be masque, wg, gool or wom")
+        self.stop()
+        self.kill_strays()
+        port = free_port()
+        tail = ""
+        for mode in (modes if protocol in ("masque", "wom") else ("h3",)):
+            progress(f"Scanning for an Aether endpoint ({protocol.upper()}{' ' + mode.upper() if protocol in ('masque', 'wom') else ''}, "
+                     f"IPv{family}, scan mode {self.scan}) ...")
+            self._launch(port, mode, protocol=protocol, family=family, fresh=True)
+            proc = self.process
+            end = time.time() + wait
+            found = None
+            while time.time() < end:
+                if cancelled():
+                    self.stop(); raise AetherError("cancelled")
+                if self.process is not proc:
+                    raise AetherError("cancelled")
+                found = self.endpoint
+                if found or proc.poll() is not None:
+                    break
+                sleep(0.5)
+            found = found or self.endpoint
+            if found:
+                ep = found[0]
+                self.stop()
+                if save:
+                    self.set_pin(protocol, mode, family, ep)
+                return ep, mode
+            tail = "\n".join(self.tail())
+            progress("No endpoint found" + (" - trying the next mode" if mode != modes[-1] and protocol in ("masque", "wom") else ""))
+            self.stop()
+        raise AetherError("Aether did not name an endpoint. Last output:\n" + tail)
 
     def _enroll_if_supported(self):
         if not self.enroll_address:
@@ -432,8 +576,12 @@ class AetherManager:
         self.last_notice = "this Aether build does not list --enroll-address; the registration address was ignored"
         return None
 
-    def _launch(self, port, mode, tor=None, tor_port=None, protocol="masque", family="4", psiphon=None, psiphon_port=None, region=None):
+    def _launch(self, port, mode, tor=None, tor_port=None, protocol="masque", family="4", psiphon=None, psiphon_port=None, region=None,
+                fresh=False):
+        """fresh=True: a scan - ignore the pinned gateway and the last-gateway cache."""
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.endpoint = None
+        peer = None if (fresh or tor == "tor-only" or psiphon == "psiphon-only") else self.pin_for(protocol, mode, family)
         base = self.data_dir.resolve()                           # Aether runs INSIDE this folder: every path it gets must be absolute
         migrate_legacy_identity(self.data_dir)
         bridge_file = None
@@ -445,7 +593,8 @@ class AetherManager:
                           psiphon=psiphon, psiphon_port=psiphon_port, psiphon_dir=base / "psiphon", region=region,
                           bridge_file=bridge_file, bridges_now=bool(self.bridges_now and tor), upstream=self.upstream,
                           psiphon_mode=self.psiphon_mode, noize=self.noize,
-                          enroll_address=self._enroll_if_supported())
+                          enroll_address=self._enroll_if_supported(), scan=self.scan, peer=peer, quick_reconnect=not fresh,
+                          fragment_api=not identity_exists(self.data_dir))
         env = None
         if getattr(self, "proxy_env", None):                     # registration (api.cloudflareclient.com) is filtered on some networks:
             env = dict(os.environ)                               # hand the running NetBridge proxy to Aether in case it honours these
