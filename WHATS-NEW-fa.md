@@ -11,6 +11,11 @@
 | Override address گروهی، اسکن IP تمیز برای یک گروه | Scan IPs |
 | خروجی Worker (`proxyip=` / `socks5=` / `http=`) | Bypass ← Worker exit |
 | WARP با Aether: MASQUE / WireGuard / gool، IPv4 / IPv6 | دکمه‌ی WARP + لیست کنارش |
+| انتخاب حالت اسکن Aether (Turbo / Balanced / Thorough / Stealth / Ironclad) | لیست کنار «Scan endpoint» |
+| «Scan endpoint»: اسکن تازه، ذخیره‌ی دروازه‌ی انتخاب‌شده و استفاده‌ی مستقیم از آن در شروع‌های بعدی (`--peer`)؛ «Unpin» برای پاک کردن | دکمه‌های همان نام |
+| «New WARP key»: کنار گذاشتن هویت فعلی (با نسخه‌ی `.bak`) و ثبت دستگاه تازه در شروع بعدی | دکمه‌ی همان نام |
+| نمایش آدرس دروازه‌ی Aether در لاگ بعد از اتصال | لاگ |
+| اصلاح: با WireGuard پروفایل noize به‌جای `firewall` / `gfw` (که برای MASQUE هستند) `balanced` / `aggressive` می‌رود | خودکار |
 | Tor via WARP، Tor alone (با bridge) | دو دکمه‌ی Tor |
 | Psiphon via WARP، Psiphon alone، انتخاب کشور خروج | دو دکمه‌ی Psiphon + لیست کشور |
 | ساخت Worker شخصی روی Cloudflare با یک کلیک | Deploy my Worker |

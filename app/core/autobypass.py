@@ -26,6 +26,9 @@ from app.utils import latency
 
 BASE_PORT = 22000
 ECH_PUBLIC_NAME = "cloudflare-ech.com"
+# Extra ways for Xray to fetch the ECH keys (from the Patterniha ECH guide). Plain DNS to 1.1.1.1 is restricted on some
+# networks; these two use DNS-over-HTTP/2 and DNS over UDP to the same address. Xray accepts both strings as echConfigList.
+ECH_EXTRA = ["h2c://1.1.1.1/dns-query", "crypto.cloudflare.com+udp://1.1.1.1"]
 DOH_CANDIDATES = [
     "https://dns.google/dns-query",
     "https://1.1.1.1/dns-query",
@@ -61,8 +64,12 @@ def doh_works(url, timeout=4.0):
         return False
 
 
+ECH_ENABLED = True       # settings "use_ech": False drops every ECH variant (and the DoH check) so AUTO does not waste time on them
+EXTRA_DOH = []          # filled from the resolver scan (settings "doh_extra"); tried before the built-in list
+
+
 def reachable_doh(candidates=None, timeout=4.0, workers=6):
-    cands = list(candidates or DOH_CANDIDATES)
+    cands = list(candidates or (list(EXTRA_DOH) + [u for u in DOH_CANDIDATES if u not in EXTRA_DOH]))
     with ThreadPoolExecutor(max_workers=workers) as ex:
         ok = list(ex.map(lambda u: doh_works(u, timeout), cands))
     return [u for u, good in zip(cands, ok) if good]
@@ -94,22 +101,44 @@ def resolve6(host, port=443):
     return _V6[host]
 
 
-def variants(profile, doh_urls=(), clean_ip=None, ipv6=False):
+FIREWALLS = ("auto", "mci", "irancell")
+
+
+def order_for_firewall(out, firewall):
+    """Orders the methods. ECH is ALWAYS last: the Patterniha channel reports (post 191) that cloudflare-ech.com is now blocked, so the ECH
+    methods rarely work any more (they are still tried at the end, in case your network differs).
+    MCI (Hamrah-e Aval): IPv6 entry points first, then plain, then fragment.   Irancell: fragment+unsafe+cipher first (F&F), then plain, then IPv6.
+    'auto': the default order (plain, fragment, IPv6)."""
+    ech = [v for v in out if v.get("bypass") == "ech"]
+    ip6 = [v for v in out if v.get("ip6")]
+    off = [v for v in out if v.get("bypass") == "off" and not v.get("ip6")]
+    rest = [v for v in out if v not in ech and v not in ip6 and v not in off]       # pattng / standard / new presets
+    if firewall == "mci":
+        return ip6 + off + rest + ech
+    if firewall == "irancell":
+        return rest + off + ip6 + ech
+    return off + rest + ip6 + ech
+
+
+def variants(profile, doh_urls=(), clean_ip=None, ipv6=False, firewall="auto"):
     """Ordered list of override dicts to try for one profile.
     ipv6=True adds, at the END, IPv6 entry points for servers given by name ({"ip6": True} = connect to the server's AAAA address)."""
     if not is_tls(profile):
         return [{"bypass": "off"}]
     # "off", then every preset the (updatable) presets file marks for AUTO: pattng, standard and any new ones
     out = [{"bypass": "off"}] + [{"bypass": n} for n in bypass.auto_names()]
-    for u in list(doh_urls)[:2]:
-        out.append({"bypass": "ech", "ech": f"{ECH_PUBLIC_NAME}+{u}"})
+    if ECH_ENABLED:
+        for u in list(doh_urls)[:2]:
+            out.append({"bypass": "ech", "ech": f"{ECH_PUBLIC_NAME}+{u}"})
+        for e in ECH_EXTRA:                              # always tried, after the DoH ones (their reachability cannot be pre-checked)
+            out.append({"bypass": "ech", "ech": e})
     if clean_ip:
         out = [dict(v, address_override=clean_ip) for v in out]
     elif ipv6 and not profile.get("address_override") and is_name(profile.get("server")):
         # the name is resolved later, inside the worker thread (find_variant skips the variant when there is no AAAA record)
         first = (bypass.auto_names() or ["off"])[0]
         out += [{"bypass": "off", "ip6": True}] + ([{"bypass": first, "ip6": True}] if first != "off" else [])
-    return out
+    return order_for_firewall(out, firewall)
 
 
 def _with(profile, v):
@@ -241,7 +270,7 @@ def _run_phase(executable, jobs, on_win, cancelled, want, state, workers, tester
 
 def auto_run(executable, profiles, on_win, on_status=lambda s: None, on_progress=lambda d, t: None,
              cancelled=lambda: False, want=4, workers=10, tester=strict_test, doh_check=reachable_doh,
-             scanner=ipscan, relaxed_tester=test_one):
+             scanner=ipscan, relaxed_tester=test_one, firewall="auto"):
     """Tries to find `want` working TLS profiles. on_win(profile, variant, ms) is called for each success.
     Returns {"tls": n, "plain": n, "insecure_fallback": bool}."""
     UPLOAD_LIMITED["n"] = 0
@@ -251,9 +280,10 @@ def auto_run(executable, profiles, on_win, on_status=lambda s: None, on_progress
     # profiles that worked before go first
     tls.sort(key=lambda p: (p.get("delay", 10 ** 6) if p.get("delay", -1) >= 0 else 10 ** 7))
 
-    on_status("Checking which DNS-over-HTTPS servers are reachable (for ECH)...")
-    doh = doh_check() if tls else []
-    on_status("ECH DoH reachable: " + (", ".join(doh) if doh else "none - ECH will be skipped"))
+    if ECH_ENABLED:
+        on_status("Checking which DNS-over-HTTPS servers are reachable (for ECH)...")
+    doh = doh_check() if tls and ECH_ENABLED else []
+    on_status("ECH DoH reachable: " + (", ".join(doh) if doh else "none - ECH will be skipped") if ECH_ENABLED else "ECH is switched off")
 
     has6 = getattr(scanner, "has_ipv6", None)
     v6 = bool(has6()) if (tls and callable(has6)) else False
@@ -263,7 +293,7 @@ def auto_run(executable, profiles, on_win, on_status=lambda s: None, on_progress
     state = {"tls_wins": 0, "wins": 0, "done": 0, "total": len(tls), "progress": on_progress}
     if tls:
         on_status(f"Phase 1: {len(tls)} TLS profile(s) x methods (stops after {want} working)")
-        _run_phase(executable, [(p, variants(p, doh, ipv6=v6)) for p in tls], on_win, cancelled, want, state, workers, tester)
+        _run_phase(executable, [(p, variants(p, doh, ipv6=v6, firewall=firewall)) for p in tls], on_win, cancelled, want, state, workers, tester)
 
     if state["tls_wins"] == 0 and tls and not cancelled():
         cf = [p for p in tls if scanner.looks_cloudflare(p)]
@@ -283,7 +313,7 @@ def auto_run(executable, profiles, on_win, on_status=lambda s: None, on_progress
                 # race: for every profile, each method is tried on all the clean IPs at once; the fastest IP wins
                 jobs = []
                 for p in cf[:20]:
-                    lists = [variants(p, doh, clean_ip=ip) for ip in ips[:RACE_WIDTH]]
+                    lists = [variants(p, doh, clean_ip=ip, firewall=firewall) for ip in ips[:RACE_WIDTH]]
                     jobs.append((p, [list(g) for g in zip(*lists)]))
                 state.update(done=0, total=len(jobs))
                 _run_phase(executable, jobs, on_win, cancelled, want, state, max(2, workers // RACE_WIDTH), tester,
@@ -307,7 +337,7 @@ def auto_run(executable, profiles, on_win, on_status=lambda s: None, on_progress
         on_status("No profile passed the YouTube/Instagram + upload check - falling back to the basic test (weaker; "
                   "these may connect but stall on uploads)")
         state.update(done=0, total=len(tls))
-        _run_phase(executable, [(p, variants(p, doh, ipv6=v6)) for p in tls], on_win, cancelled, 2, state, workers, relaxed_tester)
+        _run_phase(executable, [(p, variants(p, doh, ipv6=v6, firewall=firewall)) for p in tls], on_win, cancelled, 2, state, workers, relaxed_tester)
         relaxed = state["wins"] > 0
     return {"tls": state["tls_wins"], "plain": state["wins"] - state["tls_wins"],
             "insecure_fallback": insecure, "relaxed_fallback": relaxed}

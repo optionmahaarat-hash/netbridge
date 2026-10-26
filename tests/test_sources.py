@@ -57,3 +57,12 @@ def test_settings_keep_the_free_list_flags(tmp_path, monkeypatch):
     st.save_settings(s)
     s2 = st.load_settings()
     assert s2["free_auto"] is True and s2["free_last"] == 123.5
+
+
+def test_limit_per_source_and_bundled_lists():
+    srcs = S.load_sources()
+    assert [s["id"] for s in srcs][:1] == ["patterniha"] and len(srcs) >= 3
+    assert all(1 <= s["limit"] <= S.MAX_PROFILES for s in srcs)
+    src = {"mirrors": ["https://a/1"], "limit": 7}
+    profiles, used, errors = S.fetch_source(src, lambda url, proxy=None: ([{"server": str(i)} for i in range(50)], []))
+    assert len(profiles) == 7

@@ -25,6 +25,11 @@ def test_ech_only_with_reachable_doh():
     r, wins, calls = run([tls("a")], lambda p: 90 if p.get("bypass") == "ech" else -1)
     assert wins[0][1]["ech"] == "cloudflare-ech.com+https://dns.google/dns-query"
 
+def test_extra_ech_forms_are_tried_even_without_doh():
+    r, wins, calls = run([tls("a")], lambda p: 80 if p.get("ech") == "h2c://1.1.1.1/dns-query" else -1, doh=())
+    assert wins[0][1]["ech"] == "h2c://1.1.1.1/dns-query"
+    assert "crypto.cloudflare.com+udp://1.1.1.1" in ab.ECH_EXTRA
+
 def test_stops_after_want_winners():
     ps = [tls(str(i)) for i in range(10)]
     r, wins, _ = run(ps, lambda p: 50, want=3)
@@ -111,3 +116,25 @@ def test_no_relaxed_fallback_when_strict_passes():
     r = ab.auto_run("x", [tls("a")], lambda *a: None, tester=strict, relaxed_tester=relaxed,
                     doh_check=lambda: [], want=1, workers=1, scanner=_NoScan())
     assert r["relaxed_fallback"] is False
+
+
+def test_firewall_order():
+    base = ab.variants(tls("a"), ["https://dns.google/dns-query"], ipv6=True)
+    kinds = lambda L: [v["bypass"] for v in L]
+    for fw in ("auto", "mci", "irancell"):
+        o = ab.variants(tls("a"), ["https://dns.google/dns-query"], ipv6=True, firewall=fw)
+        k = kinds(o)
+        assert k[-3:] == ["ech", "ech", "ech"] or k[-4:].count("ech") >= 3      # ECH last (cloudflare-ech.com is blocked now)
+        assert sorted(map(str, o)) == sorted(map(str, base))                    # same methods, only reordered
+    ir = ab.variants(tls("a"), ["https://dns.google/dns-query"], firewall="irancell")
+    assert ir[0]["bypass"] not in ("off", "ech")                                # fragment first on Irancell
+
+
+
+
+def test_ech_switch_removes_all_ech_variants(monkeypatch):
+    p = tls("a")
+    monkeypatch.setattr(ab, "ECH_ENABLED", True)
+    assert any(v.get("bypass") == "ech" for v in ab.variants(p, ["https://dns.google/dns-query"]))
+    monkeypatch.setattr(ab, "ECH_ENABLED", False)
+    assert not any(v.get("bypass") == "ech" for v in ab.variants(p, ["https://dns.google/dns-query"]))

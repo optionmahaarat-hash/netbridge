@@ -1,6 +1,7 @@
 from pathlib import Path
 from urllib.parse import quote
-from PySide6.QtCore import QTimer, QThread, Signal
+from PySide6.QtCore import QTimer, QThread, Signal, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QPushButton,
     QLabel, QTextEdit, QLineEdit, QMessageBox, QDialog, QFormLayout,
@@ -12,6 +13,7 @@ import time
 from app.core.bypass import PRESETS, CIPHER_SUITES, FM_STANDARD, FM_PATTNG
 from app.core import bypass as bypass_mod, presets as presets_mod, worker_exit
 from app.ui import theme
+from app.core import lantern as lantern_mod
 from app.core import aether as aether_mod, cf_deploy, gscript as gscript_mod, sources as sources_mod
 from app.storage.profiles import load_profiles, save_profiles
 from app.utils.parser import parse_many
@@ -27,6 +29,8 @@ from app.core.autobypass import auto_run, apply_variant, is_tls, label as varian
 from app.utils.latency import exit_info
 from app.utils.leakcheck import full_report
 from app.core import browser, ipscan, ports
+from app.core import autobypass as _ab
+from app.ui.resolver_dialog import ResolverDialog
 from app.core.routing import SERVICE_PRESETS, SDNS_PRESETS, parse_dns_server, split_entries
 from app.utils import dnscheck
 from app.ui.scan_dialog import ScanDialog
@@ -189,7 +193,17 @@ class DeployWorker(QThread):
 
 
 WARP_CHOICES = [("MASQUE IPv4 (default)", "masque", "4"), ("MASQUE IPv6", "masque", "6"),
-                ("WireGuard IPv4", "wg", "4"), ("WireGuard IPv6", "wg", "6"), ("WARP-in-WARP (gool)", "gool", "4")]
+                ("MASQUE HTTP/2 IPv4", "masque-h2", "4"), ("MASQUE HTTP/2 IPv6", "masque-h2", "6"),
+                ("WireGuard over MASQUE IPv4", "wom", "4"), ("WireGuard IPv4", "wg", "4"), ("WireGuard IPv6", "wg", "6"), ("WARP-in-WARP (gool)", "gool", "4")]
+
+
+SCAN_CHOICES = [("Scan: Turbo (fastest)", "turbo"), ("Scan: Balanced", "balanced"), ("Scan: Thorough (best ping)", "thorough"),
+                ("Scan: Stealth", "stealth"), ("Scan: Ironclad (slowest, most certain)", "ironclad")]
+
+
+def warp_transport(proto):
+    """(protocol, modes) for a WARP_CHOICES value: 'masque-h2' is MASQUE over HTTP/2 only."""
+    return ("masque", ("h2",)) if proto == "masque-h2" else (proto, ("h2", "h3"))
 
 
 PSIPHON_REGIONS = [("Auto", ""), ("Germany", "DE"), ("Netherlands", "NL"), ("United States", "US"), ("United Kingdom", "GB"),
@@ -212,9 +226,33 @@ class AetherWorker(QThread):
                 path, tag = aether_mod.download_core(proxy=self.proxy, progress=self.status.emit)
                 self.status.emit(f"Aether {tag} installed: {path}")
             self.mgr.proxy_env = self.proxy
+            proto, extra = self.protocol, {}
+            if proto == "masque-h2":                       # MASQUE over HTTP/2 only (no QUIC), as in the Hamrah-e-Aval / Irancell guide
+                proto, extra = "masque", {"modes": ("h2",)}
             port = self.mgr.start(cancelled=lambda: self._stop, progress=self.status.emit, kind=self.kind,
-                                 protocol=self.protocol, family=self.family, region=self.region)
+                                 protocol=proto, family=self.family, region=self.region, **extra)
             self.done.emit(port)
+        except Exception as e:
+            self.done.emit(str(e))
+
+
+class AetherScanWorker(QThread):
+    """'Scan endpoint': installs the Aether core when it is missing, then runs one fresh scan and keeps the gateway it names."""
+    status = Signal(str)
+    done = Signal(object)                      # (endpoint, mode) or an error text
+    def __init__(self, manager, proxy, protocol, family, parent=None):
+        super().__init__(parent); self.mgr, self.proxy, self.protocol, self.family, self._stop = manager, proxy, protocol, family, False
+    def stop(self):
+        self._stop = True
+    def run(self):
+        try:
+            if not aether_mod.installed():
+                path, tag = aether_mod.download_core(proxy=self.proxy, progress=self.status.emit)
+                self.status.emit(f"Aether {tag} installed: {path}")
+            self.mgr.proxy_env = self.proxy
+            proto, modes = warp_transport(self.protocol)
+            self.done.emit(self.mgr.scan_endpoint(cancelled=lambda: self._stop, progress=self.status.emit, protocol=proto,
+                                                  family=self.family, modes=modes))
         except Exception as e:
             self.done.emit(str(e))
 
@@ -321,9 +359,9 @@ class RoutingDialog(QDialog):
 
 class DelayWorker(QThread):
     result = Signal(object, int)          # profile dict, ms (-1 = failed)
-    def __init__(self, exe, profiles, parent=None):
+    def __init__(self, exe, profiles, parent=None, firewall="auto"):
         super().__init__(parent)
-        self.exe, self.profiles, self._stop = exe, profiles, False
+        self.exe, self.profiles, self._stop, self.firewall = exe, profiles, False, firewall
     def stop(self): self._stop = True
     def run(self):
         test_many(self.exe, [(p, p) for p in self.profiles],
@@ -336,15 +374,15 @@ class AutoWorker(QThread):
     status = Signal(str)
     progress = Signal(int, int)
     summary = Signal(object)
-    def __init__(self, exe, profiles, parent=None):
+    def __init__(self, exe, profiles, parent=None, firewall="auto"):
         super().__init__(parent)
-        self.exe, self.profiles, self._stop = exe, profiles, False
+        self.exe, self.profiles, self._stop, self.firewall = exe, profiles, False, firewall
     def stop(self): self._stop = True
     def run(self):
         try:
             res = auto_run(self.exe, self.profiles, lambda p, v, ms: self.win.emit(p, v, ms),
                            on_status=self.status.emit, on_progress=self.progress.emit,
-                           cancelled=lambda: self._stop)
+                           cancelled=lambda: self._stop, firewall=self.firewall)
         except Exception as e:
             self.status.emit(f"Auto bypass error: {e}")
             res = {"tls": 0, "plain": 0, "insecure_fallback": False}
@@ -360,6 +398,12 @@ class MainWindow(QMainWindow):
         self.free_auto_act = tm.addAction("Refresh free configs once a day (on start)")
         self.free_auto_act.setCheckable(True)
         tm.addAction("Telegram proxy (my Cloudflare Worker) ...", lambda: self.telegram_proxy())
+        tm.addAction("Delete ALL profiles (start with an empty list) ...", lambda: self.delete_all())
+        tm.addAction("Open Lantern (installed separately) ...", lambda: self.open_lantern())
+        tm.addAction("Aether identity: save a backup ...", lambda: self.aether_identity("save"))
+        tm.addAction("Aether identity: restore from a backup ...", lambda: self.aether_identity("restore"))
+        tm.addAction("Check Lantern local proxy (port test) ...", lambda: self.check_lantern_proxy())
+        tm.addAction("DNS resolver finder (UDP / TCP / DoT / DoH) ...", lambda: ResolverDialog(self.settings, save_settings, self).exec())
         hm = self.menuBar().addMenu("&Help")
         hm.addAction("&Guide / راهنما", lambda: HelpDialog(self).exec())
         hm.addAction("&About NetBridge", lambda: AboutDialog(self).exec())
@@ -367,6 +411,8 @@ class MainWindow(QMainWindow):
         self.profiles = load_profiles()
         self.settings = load_settings()
         self.free_auto_act.setChecked(bool(self.settings.get("free_auto")))
+        _ab.EXTRA_DOH[:] = list(self.settings.get("doh_extra") or [])
+        _ab.ECH_ENABLED = bool(self.settings.get("use_ech", True))
         self.free_auto_act.toggled.connect(self._set_free_auto)
         QTimer.singleShot(4000, self._free_auto_check)
         self.view = []; self.worker = None; self.auto_worker = None; self._auto_wins = []; self.pending_best = False; self._done = 0; self._total = 0
@@ -437,6 +483,8 @@ class MainWindow(QMainWindow):
             self.warp_mode.addItem(label, (proto, fam))
         self.warp_mode.setToolTip("Which WARP transport and IP version Aether uses. If the first one does not connect, try another.")
         r6.addWidget(self.warp_mode)
+        self.lantern_btn = QPushButton("Open Lantern"); self.lantern_btn.setToolTip("Starts your separately installed Lantern (it cannot be built into NetBridge).")
+        self.lantern_btn.clicked.connect(self.open_lantern); r6.addWidget(self.lantern_btn)
         self.deploy_btn = QPushButton("Deploy my Worker (Cloudflare)"); self.deploy_btn.setObjectName("primary")
         self.deploy_btn.clicked.connect(self.deploy_worker); r6.addWidget(self.deploy_btn)
         r7 = QHBoxLayout()
@@ -448,6 +496,25 @@ class MainWindow(QMainWindow):
         self.free_btn = QPushButton("Get free configs"); self.free_btn.setObjectName("primary"); self.free_btn.clicked.connect(self.get_free_configs)
         r7.addWidget(self.free_btn)
         b = QPushButton("Help / راهنما"); b.clicked.connect(lambda: HelpDialog(self).exec()); r7.addWidget(b)
+        r9 = QHBoxLayout()
+        self.warp_scan = QComboBox()
+        for label, val in SCAN_CHOICES:
+            self.warp_scan.addItem(label, val)
+        self.warp_scan.setToolTip("How Aether looks for a working gateway. Turbo takes the first answer; Thorough looks for the best ping; "
+                                  "Ironclad opens a real tunnel to each candidate (slowest). If Turbo connects but is unstable, try Ironclad.")
+        r9.addWidget(self.warp_scan)
+        self.scanep_btn = QPushButton("Scan endpoint")
+        self.scanep_btn.setToolTip("Runs one fresh Aether scan with the transport, IP version and scan mode chosen above, then remembers the gateway "
+                                   "it picked. Later WARP starts use it at once instead of scanning. Press again to cancel a running scan.")
+        self.scanep_btn.clicked.connect(self.scan_endpoint); r9.addWidget(self.scanep_btn)
+        self.unpin_btn = QPushButton("Unpin")
+        self.unpin_btn.setToolTip("Forget the remembered gateways: Aether scans (or uses its own last-gateway cache) again.")
+        self.unpin_btn.clicked.connect(self.unpin_endpoints); r9.addWidget(self.unpin_btn)
+        self.newkey_btn = QPushButton("New WARP key")
+        self.newkey_btn.setToolTip("Moves the current WARP identity aside (a .bak copy stays) so the next Aether start registers a fresh device. "
+                                   "Use it when the connection is throttled or the old key stopped working. A new registration can be refused for "
+                                   "a long time: save a backup first (Tools menu) if the key still works for you.")
+        self.newkey_btn.clicked.connect(self.new_warp_key); r9.addWidget(self.newkey_btn)
         r8 = QHBoxLayout()
         self.psi_btn = QPushButton("Psiphon via WARP"); self.psi_btn.clicked.connect(lambda: self.warp_aether("psiphon")); r8.addWidget(self.psi_btn)
         self.psionly_btn = QPushButton("Psiphon alone"); self.psionly_btn.clicked.connect(lambda: self.warp_aether("psiphon-only")); r8.addWidget(self.psionly_btn)
@@ -456,13 +523,31 @@ class MainWindow(QMainWindow):
             self.psi_region.addItem(label, cc)
         self.psi_region.setToolTip("Exit country for Psiphon (Auto = Psiphon decides).")
         r8.addWidget(self.psi_region)
+        self.psi_mode = QComboBox()
+        for label, v in (("Psiphon: automatic", None), ("Psiphon: CDN-fronted only", "cdn"), ("Psiphon: direct (no fronting)", "direct")):
+            self.psi_mode.addItem(label, v)
+        self.psi_mode.setToolTip("If Psiphon cannot start on your network, try 'CDN-fronted only' (it hides behind a CDN). Needs Aether 2.2 or newer.")
+        r8.addWidget(self.psi_mode)
+        self.psicdn_btn = QPushButton("Psiphon CDN (alone)")
+        self.psicdn_btn.setToolTip("Psiphon hidden behind a CDN, started on its own: it does not use the current connection (weak profiles would only slow it). Wait up to 7 minutes.")
+        self.psicdn_btn.clicked.connect(lambda: self.warp_aether("psiphon-only", cdn=True)); r8.addWidget(self.psicdn_btn)
+        self.noize_combo = QComboBox()
+        for label, v in (("Obfuscation: firewall (balanced)", "firewall"), ("Obfuscation: gfw (heavier)", "gfw")):
+            self.noize_combo.addItem(label, v)
+        self.noize_combo.setToolTip("WARP / MASQUE obfuscation profile. Try 'gfw' when 'firewall' does not connect. Needs Aether 2.2 or newer.")
+        r8.addWidget(self.noize_combo)
+        self.enroll_edit = QLineEdit()
+        self.enroll_edit.setPlaceholderText("WARP registration address (optional, e.g. 188.114.97.6)")
+        self.enroll_edit.setToolTip("Where Aether registers its WARP identity. Use a Cloudflare IP if api.cloudflareclient.com is blocked for you. "
+                                    "Only used when your Aether core lists --enroll-address (2.3 + restricted-network build).")
+        r8.addWidget(self.enroll_edit)
         self.tg_btn = QPushButton("Telegram proxy"); self.tg_btn.clicked.connect(self.telegram_proxy); r8.addWidget(self.tg_btn)
         self.via_chk = QCheckBox("Aether through my current connection")
         self.via_chk.setChecked(True)          # default on: used only when a normal connection is already running
         self.via_chk.setToolTip("When Psiphon / Tor / WARP cannot start on their own, connect to a profile that works first, tick this and press the Aether button: "
                                 "Aether then dials through that connection.")
         r8.addWidget(self.via_chk)
-        ll.addLayout(r_auto); ll.addLayout(r3); ll.addLayout(r4); ll.addLayout(r5); ll.addLayout(r6); ll.addLayout(r7); ll.addLayout(r8)
+        ll.addLayout(r_auto); ll.addLayout(r3); ll.addLayout(r4); ll.addLayout(r5); ll.addLayout(r6); ll.addLayout(r7); ll.addLayout(r8); ll.addLayout(r9)
         splitter.addWidget(left)
 
         right = QWidget(); rl = QVBoxLayout(right)
@@ -473,6 +558,20 @@ class MainWindow(QMainWindow):
         self.mode.setCurrentIndex(max(0, self.mode.findData(self.settings.get("mode", "manual"))))
         self.mode.currentIndexChanged.connect(self.mode_changed)
         rl.addWidget(QLabel("Connection mode:")); rl.addWidget(self.mode)
+        self.fw_combo = QComboBox()
+        self.fw_combo.setToolTip("Which operator firewall you are behind. AUTO tries the methods that suit it first (faster). "
+                                 "A SIM can be MCI while the firewall is Irancell, and the other way round: if one does not work, try the other.")
+        for k, v in (("auto", "Firewall: unknown (default order)"), ("mci", "Firewall: MCI / Hamrah-e Aval (IPv6 first)"),
+                     ("irancell", "Firewall: Irancell (Fragment first)")):
+            self.fw_combo.addItem(v, k)
+        self.fw_combo.setCurrentIndex(max(0, self.fw_combo.findData(self.settings.get("firewall", "auto"))))
+        self.fw_combo.currentIndexChanged.connect(self.firewall_changed)
+        rl.addWidget(self.fw_combo)
+        self.ech_chk = QCheckBox("Try ECH")
+        self.ech_chk.setToolTip("AUTO tries the ECH methods last. Untick to skip them completely (saves time when Cloudflare ECH is blocked on your network).")
+        self.ech_chk.setChecked(bool(self.settings.get("use_ech", True)))
+        self.ech_chk.toggled.connect(self.ech_toggled)
+        rl.addWidget(self.ech_chk)
         self.connect_btn = QPushButton("CONNECT")
         self.connect_btn.setMinimumHeight(52); self.connect_btn.clicked.connect(self.toggle); self._style_connect(False)
         rl.addWidget(self.connect_btn)
@@ -538,6 +637,116 @@ class MainWindow(QMainWindow):
     def group_changed(self, _):
         self.settings["group"] = self.group_combo.currentData() or ""
         save_settings(self.settings); self.refresh(keep=None)
+
+    def open_lantern(self):
+        """Lantern cannot be built into NetBridge (GPL-3.0); this starts the copy the user installed, or opens its download page."""
+        p = lantern_mod.find()
+        if p:
+            try:
+                lantern_mod.launch(p)
+                QMessageBox.information(self, "Lantern", f"Started: {p}\n\nLantern runs by itself. If it takes over the system proxy, turn off "
+                                        "NetBridge's system proxy first so the two do not fight.")
+                return
+            except Exception as e:
+                QMessageBox.warning(self, "Lantern", f"Could not start {p}:\n{e}")
+                return
+        if QMessageBox.question(self, "Lantern", "Lantern is not installed in the usual places.\n\nOpen its official page "
+                                "to download it? (NetBridge cannot include Lantern because of its licence.)") == QMessageBox.Yes:
+            QDesktopServices.openUrl(QUrl(lantern_mod.PAGE))
+
+    def scan_endpoint(self):
+        if getattr(self, "scanw", None) and self.scanw.isRunning():
+            self.scanw.stop(); self.log.append("Aether: cancelling the scan ..."); return
+        if self.aether.running or (getattr(self, "aetherw", None) and self.aetherw.isRunning()):
+            QMessageBox.information(self, "Aether", "Disconnect Aether first (or wait until it has started), then scan for an endpoint.")
+            return
+        if not aether_mod.installed() and QMessageBox.question(self, "Aether core",
+                "The scan needs the separate open-source program Aether (AGPL-3.0, github.com/CluvexStudio/Aether).\n\n"
+                "It is downloaded from its official GitHub releases, checked with its SHA-256 and kept in cores/aether/. Continue?") != QMessageBox.Yes:
+            return
+        proto, fam = self.warp_mode.currentData()
+        self.aether.scan = self.warp_scan.currentData() or "turbo"
+        self.aether.noize = self.noize_combo.currentData() or "firewall"
+        self.log.append("Aether: scanning for an endpoint - this can take a few minutes. Press 'Scan endpoint' again to cancel.")
+        self.scanw = AetherScanWorker(self.aether, self.proxy_url_for_download(), proto, fam, self)
+        self.scanw.status.connect(self.log.append)
+        self.scanw.done.connect(self._scan_done)
+        self.scanw.start()
+
+    def _scan_done(self, result):
+        if not isinstance(result, tuple):
+            if str(result) == "cancelled":
+                self.log.append("Aether: scan cancelled."); return
+            QMessageBox.warning(self, "Aether", str(result)); return
+        ep, mode = result
+        proto = warp_transport(self.warp_mode.currentData()[0])[0]
+        self.log.append(f"Aether: endpoint found: {ep}" + (f" (HTTP/{'3' if mode == 'h3' else '2'})" if proto in ("masque", "wom") else "")
+                        + ". Saved: the next WARP start with these settings uses it without scanning.")
+
+    def unpin_endpoints(self):
+        n = self.aether.clear_pins()
+        self.log.append(f"Aether: {n} remembered endpoint(s) removed." if n else "Aether: no remembered endpoint.")
+
+    def new_warp_key(self):
+        if getattr(self, "aetherw", None) and self.aetherw.isRunning():
+            QMessageBox.information(self, "Aether", "Aether is still starting. Press its button again to cancel, then ask for a new key.")
+            return
+        if not aether_mod.identity_exists(self.aether.data_dir):
+            QMessageBox.information(self, "Aether", "There is no saved WARP key yet: the next Aether start registers one by itself.")
+            return
+        msg = "Get a new WARP key?\n\nThe current identity is moved aside (a .bak copy is kept) and the next WARP start registers a fresh device."
+        if self.aether.running:
+            msg += "\n\nAether is running now: it will be stopped and the connection through it ends."
+        if QMessageBox.question(self, "New WARP key", msg) != QMessageBox.Yes:
+            return
+        try:
+            n = self.aether.new_key()
+        except OSError as e:
+            QMessageBox.warning(self, "Aether", f"Could not move the old key: {e}"); return
+        self.log.append(f"Aether: {n} identity file(s) moved aside. Press 'WARP (Aether core)' to register a new key.")
+
+    def aether_identity(self, what):
+        """WARP identity (aether.toml). A new registration can be refused for a long time and cannot go through a proxy chain, so keep a copy.
+        The file holds PRIVATE keys: keep it like a password."""
+        try:
+            if what == "save":
+                path, _ = QFileDialog.getSaveFileName(self, "Save the Aether identity", "aether-identity-backup.zip", "ZIP (*.zip)")
+                if path:
+                    aether_mod.backup_identity(path)
+                    QMessageBox.information(self, "Aether identity", f"Saved: {path}\n\nIt contains private keys - do not share it.")
+            else:
+                if self.aether.running:
+                    QMessageBox.warning(self, "Aether identity", "Disconnect Aether first."); return
+                path, _ = QFileDialog.getOpenFileName(self, "Restore an Aether identity", "", "Backups (*.zip *.toml);;All files (*)")
+                if path:
+                    aether_mod.restore_identity(path)
+                    QMessageBox.information(self, "Aether identity", "Restored. Replaced files were kept as *.bak.")
+        except Exception as e:
+            QMessageBox.warning(self, "Aether identity", str(e))
+
+    def check_lantern_proxy(self):
+        """Only TESTS a port: old reports say Lantern serves an HTTP proxy on 127.0.0.1:8787, which nobody has confirmed for current versions."""
+        port, ok = QInputDialog.getInt(self, "Lantern proxy test", "Port to test on 127.0.0.1 (start Lantern and connect it first):",
+                                       lantern_mod.GUESS_PORT, 1, 65535)
+        if not ok:
+            return
+        r = lantern_mod.probe_proxy(port)
+        if r["works"]:
+            msg = f"An HTTP proxy on 127.0.0.1:{port} works ({r['ms']} ms). Tell me the port and I can add 'connect through it'."
+        elif r["listening"]:
+            msg = f"Something listens on {port} but it did not carry a test request.\n{r['error']}"
+        else:
+            msg = r["error"] or "Nothing answered."
+        QMessageBox.information(self, "Lantern proxy test", msg)
+
+    def ech_toggled(self, on):
+        self.settings["use_ech"] = bool(on)
+        _ab.ECH_ENABLED = bool(on)
+        save_settings(self.settings)
+
+    def firewall_changed(self, _):
+        self.settings["firewall"] = self.fw_combo.currentData() or "auto"
+        save_settings(self.settings)
 
     def mode_changed(self, _):
         self.settings["mode"] = self.mode.currentData()
@@ -734,6 +943,19 @@ class MainWindow(QMainWindow):
         self.refresh(keep=False)
         self.log.append(f"Deleted {len(idx)} profile(s).")
 
+    def delete_all(self):
+        if not self.profiles:
+            self.log.append("The list is already empty."); return
+        if QMessageBox.question(self, "Delete all", f"Delete ALL {len(self.profiles)} profiles and start with an empty list?\n"
+                                "(Disconnect first if you are connected.)", QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        n = len(self.profiles)
+        self.profiles.clear()
+        save_profiles(self.profiles)         # an existing (empty) file is never re-filled with the bundled servers
+        self.view = []
+        self.refresh(keep=False)
+        self.log.append(f"Deleted all {n} profile(s). The list is empty now.")
+
     # ---- plain -> TLS
     def convert_tls(self):
         if self.xray.version() is None:
@@ -843,6 +1065,7 @@ class MainWindow(QMainWindow):
             sp = aether_mod.free_port(1900)
             hp = aether_mod.free_port(sp + 1)
             feeder_mod.make_feeder_config(self.active_config, Path("configs/feeder.json"), sp, hp)
+            self._feeder_http = hp
             self.feeder.start(Path("configs/feeder.json"))
             for _ in range(40):
                 if aether_mod.socks_ready(sp):
@@ -862,7 +1085,7 @@ class MainWindow(QMainWindow):
                             else "Tor bridges: none saved - Aether finds bridges by itself.")
 
     # ---------- WARP through the Aether core ----------
-    def warp_aether(self, kind="warp"):
+    def warp_aether(self, kind="warp", cdn=False):
         """kind: "warp", "tor" (Tor carried inside WARP) or "tor-only" (plain Tor, bridges when blocked)."""
         if getattr(self, "aetherw", None) and self.aetherw.isRunning():
             if QMessageBox.question(self, "Aether", "Aether is still starting (Tor / Psiphon can take a few minutes).\n\n"
@@ -887,16 +1110,30 @@ class MainWindow(QMainWindow):
                     "checked with its SHA-256 and kept in cores/aether/. Continue?") != QMessageBox.Yes:
                 return
         self.aether.upstream = None
-        if self.via_chk.isChecked() and self.xray.running and not self.aether.running:
+        self.aether.psiphon_mode = "cdn" if cdn else (self.psi_mode.currentData() if kind.startswith("psiphon") else None)
+        self.aether.noize = self.noize_combo.currentData() or "firewall"
+        self.aether.enroll_address = (self.enroll_edit.text().strip() or None)
+        if not cdn and self.via_chk.isChecked() and self.xray.running and not self.aether.running:
             port = self.start_feeder()
             if not port:
                 return
             self.aether.upstream = feeder_mod.upstream_url(port)
+            if kind == "warp" and getattr(self, "_feeder_http", None):
+                # WARP's own API calls (api.cloudflareclient.com) cannot use a SOCKS upstream (the engine has no SOCKS support there),
+                # but they can use an HTTP one - and that call is what a filtered network resets ("TLS handshake failed unexpected EOF").
+                self.aether.upstream = f"http://127.0.0.1:{self._feeder_http}"
             self.log.append(f"Aether will dial through your current connection ({self.aether.upstream}).")
-        elif self.via_chk.isChecked():
+        elif not cdn and self.via_chk.isChecked():
             self.log.append("No normal connection is running, so Aether starts directly (connect AUTO first if it cannot start).")
         self.log.append(f"Aether ({kind}): starting - the buttons stay active; press one again to cancel.")
         proto, fam = self.warp_mode.currentData() if kind == "warp" else ("masque", "4")
+        self.aether.scan = self.warp_scan.currentData() or "turbo"
+        wp, wmodes = warp_transport(proto)
+        pin = next((self.aether.pin_for(wp, m, fam) for m in wmodes if self.aether.pin_for(wp, m, fam)), None)
+        if pin and kind not in ("tor-only", "psiphon-only"):
+            self.log.append(f"Aether will use the remembered endpoint {pin} instead of scanning (press 'Unpin' to scan again).")
+        if not aether_mod.identity_exists(self.aether.data_dir):
+            self.log.append("Aether: no WARP key yet - it will be registered on this start (the registration call is sent fragmented).")
         self.aetherw = AetherWorker(self.aether, self.proxy_url_for_download(), kind, self, protocol=proto, family=fam,
                                   region=(self.psi_region.currentData() or None) if kind.startswith("psiphon") else None)
         self.aetherw.status.connect(self.log.append)
@@ -947,32 +1184,50 @@ class MainWindow(QMainWindow):
         srcs = sources_mod.load_sources()
         if not srcs:
             QMessageBox.warning(self, "Free configs", "No config source is listed in assets/config_sources.json."); return
-        src = srcs[0]
-        if not silent and QMessageBox.question(self, "Free configs",
-                f"Downloads the public list '{src['name']}' ({src['page']}) and replaces its previous servers.\n\n"
-                "Careful: these servers belong to other people. Your traffic passes through them, so do not use them for banking or "
-                "private accounts - use your own Worker (Deploy my Worker) for that.\n\nAfter it finishes, press AUTO to find the best one. Continue?") != QMessageBox.Yes:
-            return
+        if not silent:
+            names = "\n".join(f"  - {s['name']}  ({s['page']})" for s in srcs)
+            if QMessageBox.question(self, "Free configs",
+                    f"Downloads these public lists and replaces their previous servers:\n{names}\n\n"
+                    "Careful: these servers belong to other people. Your traffic passes through them, so do not use them for banking or "
+                    "private accounts - use your own Worker (Deploy my Worker) for that.\n\nAfter it finishes, press AUTO to find the best one "
+                    "(tip: pick one group in the group box first to make AUTO faster). Continue?") != QMessageBox.Yes:
+                return
+        self._free_queue = list(srcs)
+        self._free_any = False
         self.free_btn.setEnabled(False)
+        self._free_next()
+
+    def _free_next(self):
+        if not self._free_queue:
+            self.free_btn.setEnabled(True)
+            if self._free_any:
+                self.log.append("Press AUTO to test them and connect to the best one.")
+            return
+        self._free_first = not self._free_any and len(self._free_queue) == len(sources_mod.load_sources())
+        src = self._free_queue.pop(0)
         self.srcw = SourceWorker(src, self.proxy_url() if self.xray.running else None, self)
         self.srcw.done.connect(self._free_done)
         self.srcw.start()
 
     def _free_done(self, result):
-        self.free_btn.setEnabled(True)
         if not isinstance(result, tuple):
-            if getattr(self, "_free_silent", False):
-                self.log.append(f"Free configs: could not refresh the list ({result})")
-            else:
+            msg = f"Free configs: a list could not be downloaded ({result})"
+            self.log.append(msg)
+            if not getattr(self, "_free_silent", False) and not self._free_any and not self._free_queue:
                 QMessageBox.warning(self, "Free configs", f"Could not download the list:\n{result}")
+            self._free_next()
             return
+        self._free_any = True
         self.settings["free_last"] = time.time(); save_settings(self.settings)
         src, profiles, mirror, errors = result
         self.profiles[:] = sources_mod.drop_group(self.profiles, src["group"])
-        profiles = self._filter_tls(profiles)
-        self.log.append(f"Free configs from {mirror}")
+        if getattr(self, "_free_first", False) and not getattr(self, "_free_silent", False):
+            profiles = self._filter_tls(profiles)                # ask once, for the first list
+        else:                                                     # the other lists: the bypass methods need TLS, so keep only TLS / Reality
+            profiles = [p for p in profiles if p.get("security") in ("tls", "reality")]
+        self.log.append(f"Free configs '{src['name']}' from {mirror}: {len(profiles)} server(s)")
         self._report(*self._add_profiles(profiles, src["group"]), errors)
-        self.log.append("Press AUTO to test them and connect to the best one.")
+        self._free_next()
 
     # ---------- Telegram web proxy on the user's own Cloudflare account ----------
     def telegram_proxy(self):
@@ -998,7 +1253,7 @@ class MainWindow(QMainWindow):
         return f"http://127.0.0.1:{self.http_port}" if self.xray.running else None
 
     def _warp_ready(self, result):
-        for b in (self.warp_btn, self.tor_btn, self.toronly_btn, self.psi_btn, self.psionly_btn):
+        for b in (self.warp_btn, self.tor_btn, self.toronly_btn, self.psi_btn, self.psionly_btn, self.psicdn_btn):
             b.setEnabled(True)
         kind = getattr(self, "_aether_kind", "warp")
         if not isinstance(result, int):
@@ -1013,7 +1268,9 @@ class MainWindow(QMainWindow):
             self.profiles.append(p)
         p["port"] = result
         save_profiles(self.profiles); self.refresh(keep=p)
-        self.log.append(f"Aether ({kind}) is ready: SOCKS5 127.0.0.1:{result}. Connecting through it ...")
+        gw = self.aether.endpoint
+        self.log.append(f"Aether ({kind}) is ready: SOCKS5 127.0.0.1:{result}."
+                        + (f" Gateway: {gw[0]}" + (f" -> {gw[1]}" if gw[1] else "") + "." if gw else "") + " Connecting through it ...")
         self.connect_(profile=p)
 
     def disconnect_(self):
@@ -1253,7 +1510,7 @@ class MainWindow(QMainWindow):
         self._auto_wins = []
         self.auto_btn.setText("Stop auto search")
         self.log.append(f"AUTO: testing {len(profs)} profile(s) with every method (this can take a few minutes)...")
-        self.auto_worker = AutoWorker(self.xray.executable, profs, self)
+        self.auto_worker = AutoWorker(self.xray.executable, profs, self, self.settings.get("firewall", "auto"))
         self.auto_worker.win.connect(self._auto_win)
         self.auto_worker.status.connect(self._auto_status)
         self.auto_worker.progress.connect(lambda d, t: self.status.setText(f"Status: auto search {d}/{t} ..."))
@@ -1275,7 +1532,7 @@ class MainWindow(QMainWindow):
         save_profiles(self.profiles); self.refresh()
         self.status.setText("Status: " + ("Xray running" if self.xray.running else "Disconnected"))
         if res.get("relaxed_fallback"):
-            self.log.append("AUTO: WARNING - no profile passed the YouTube/Instagram check; the connected one only passed "
+            self.log.append("AUTO: TIP - if YouTube does not open, press WARP with \"MASQUE HTTP/2\" (Aether). WARNING - no profile passed the YouTube/Instagram check; the connected one only passed "
                             "the basic test, so those sites may not open. Try again later or import a fresh subscription.")
         tls_wins = [x for x in self._auto_wins if is_tls(x[0])]
         pool = tls_wins or self._auto_wins

@@ -21,7 +21,9 @@ def load_sources(path=None):
     for s in data.get("sources", []):
         mirrors = [m for m in s.get("mirrors", []) if isinstance(m, str) and m.startswith("https://")]
         if s.get("id") and s.get("group") and mirrors:
-            out.append({"id": s["id"], "name": s.get("name", s["id"]), "group": s["group"], "page": s.get("page", ""), "mirrors": mirrors})
+            lim = s.get("limit")
+            lim = lim if isinstance(lim, int) and 1 <= lim <= MAX_PROFILES else MAX_PROFILES        # how many servers of this list are kept
+            out.append({"id": s["id"], "name": s.get("name", s["id"]), "group": s["group"], "page": s.get("page", ""), "mirrors": mirrors, "limit": lim})
     return out
 
 
@@ -35,7 +37,7 @@ def fetch_source(source, fetch, proxy=None):
             last = f"{url}: {e}"
             continue
         if profiles:
-            return profiles[:MAX_PROFILES], url, errors
+            return profiles[:source.get("limit", MAX_PROFILES)], url, errors
         last = f"{url}: the list has no usable servers"
     raise SourceError(last)
 

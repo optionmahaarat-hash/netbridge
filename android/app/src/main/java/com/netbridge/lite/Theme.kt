@@ -83,6 +83,11 @@ private val S: Map<String, Pair<String, String>> = mapOf(
     "deploy_busy" to ("در حال ساخت... چند ثانیه صبر کنید" to "Creating... wait a few seconds"),
     "deploy_ok" to ("ساخته و اضافه شد. ممکن است یک دقیقه طول بکشد تا جواب دهد:" to "Created and added. It may take a minute to start answering:"),
     "deploy_fail" to ("ساخت ناموفق بود:" to "Could not create it:"),
+    "fw" to ("فایروال اپراتور" to "Operator firewall"),
+    "fw_auto" to ("نامعلوم" to "Unknown"),
+    "fw_mci" to ("همراه اول (IPv6 اول)" to "MCI (IPv6 first)"),
+    "fw_irancell" to ("ایرانسل (Fragment اول)" to "Irancell (Fragment first)"),
+    "fw_help" to ("سیم‌کارت همراه اول ممکن است فایروال ایرانسل داشته باشد و برعکس. اگر یکی جواب نداد، دیگری را امتحان کنید." to "A MCI SIM can sit behind the Irancell firewall and the other way round. If one does not work, try the other."),
     "tg" to ("پروکسی تلگرام (Worker شخصی)" to "Telegram proxy (my Worker)"),
     "tg_help" to ("یک پروکسی وب تلگرام روی حساب رایگان کلودفلر خودتان ساخته می‌شود (Worker متن‌باز ToiCF؛ همراه برنامه نیست و هنگام ساخت دانلود می‌شود).\nتوکن: همان قالب «Edit Cloudflare Workers» با Zone Resources = All zones.\nنکته: آدرس workers.dev در بعضی شبکه‌ها فیلتر است؛ با یک دامنهٔ اصلی روی کلودفلر (مثل example.com) جواب می‌دهد. دامنهٔ فرعی مجاز نیست.\nتوکن ذخیره نمی‌شود؛ بعد از کار آن را در کلودفلر حذف کنید." to
         "Creates a Telegram web proxy on YOUR free Cloudflare account (open-source ToiCF Worker; not bundled, downloaded when you press Create).\nToken: the 'Edit Cloudflare Workers' template with Zone Resources = All zones.\nNote: workers.dev is filtered on some networks; a ROOT domain on Cloudflare (like example.com) works. Sub-domains are not accepted as zones.\nThe token is never saved; delete it in Cloudflare afterwards."),

@@ -73,7 +73,7 @@ def test_a_new_method_shows_up_in_menu_and_auto(tmp_path):
     assert list(bypass.PRESETS)[0] == "off" and list(bypass.PRESETS)[-1] == "custom"
     assert bypass.auto_names() == ["pattng", "standard", "m3"]
     v = autobypass.variants({**BASE}, doh_urls=["https://dns.google/dns-query"])
-    assert [x["bypass"] for x in v] == ["off", "pattng", "standard", "m3", "ech"]
+    assert [x["bypass"] for x in v] == ["off", "pattng", "standard", "m3", "ech", "ech", "ech"]   # DoH form + the two extra ECH forms, always last
     s = generate_xray_config({**BASE, "bypass": "m3"})["outbounds"][0]["streamSettings"]
     assert s["tlsSettings"]["fingerprint"] == "chrome" and "cipherSuites" not in s["tlsSettings"]
 

@@ -28,6 +28,7 @@ object Auto {
         Triple("Google", "https://www.google.com/generate_204", { c: Int -> c == 204 })
     )
     // same list as the Windows app (names + IPs): a network that blocks the bare IPs often still lets the names through
+    private val ECH_EXTRA = listOf("h2c://1.1.1.1/dns-query", "crypto.cloudflare.com+udp://1.1.1.1")
     private val DOH = listOf(
         "https://dns.google/dns-query", "https://1.1.1.1/dns-query", "https://cloudflare-dns.com/dns-query",
         "https://8.8.8.8/dns-query", "https://dns.quad9.net/dns-query", "https://9.9.9.9/dns-query"
@@ -204,22 +205,41 @@ object Auto {
         return v
     }
 
+    /** operator firewall chosen by the user: "auto" | "mci" | "irancell" (see order_for_firewall in app/core/autobypass.py) */
+    @Volatile var firewall: String = "auto"
+
+    /** ECH is ALWAYS last: cloudflare-ech.com is reported blocked now (Patterniha channel, post 191); it is still tried at the end. */
+    private fun orderFor(out: List<JSONObject>): List<JSONObject> {
+        val ech = out.filter { it.optString("bypass") == "ech" }
+        val ip6 = out.filter { it.optBoolean("ip6") }
+        val off = out.filter { it.optString("bypass") == "off" && !it.optBoolean("ip6") }
+        val rest = out.filter { it !in ech && it !in ip6 && it !in off }
+        return when (firewall) {
+            "mci" -> ip6 + off + rest + ech
+            "irancell" -> rest + off + ip6 + ech
+            else -> off + rest + ip6 + ech
+        }
+    }
+
     private fun variants(p: P, doh: List<String>): List<JSONObject> {
         if (!isTls(p)) return listOf(JSONObject().put("bypass", "off"))
         val out = ArrayList<JSONObject>()
-        savedVariant(p)?.let { out.add(it) }                       // what worked on the PC goes first
+        val saved = savedVariant(p)                                // what worked on the PC goes first (kept in front of the ordering below)
         out.add(JSONObject().put("bypass", "off"))
         for (n in Presets.autoNames()) out.add(JSONObject().put("bypass", n))     // pattng, standard + any new method of the preset file
         // ECH is ALWAYS tried: with the DoH servers that answered, or (if none did) with the two common ones
         for (u in (if (doh.isNotEmpty()) doh else DOH_FALLBACK).take(2))
             out.add(JSONObject().put("bypass", "ech").put("ech", "${ConfigGen.ECH_PUBLIC}+$u"))
+        // extra ways to fetch the ECH keys (Patterniha ECH guide): DNS over HTTP/2 and over UDP to 1.1.1.1; Xray accepts both as echConfigList
+        for (e in ECH_EXTRA) out.add(JSONObject().put("bypass", "ech").put("ech", e))
         // IPv6 entry points go LAST (the name is resolved later, in the worker; no AAAA record = variant skipped)
         if (ipv6Route && p.s("address_override").isEmpty() && !isIp(p.s("server"))) {
             out.add(JSONObject().put("bypass", "off").put("ip6", true))
             Presets.autoNames().firstOrNull()?.let { out.add(JSONObject().put("bypass", it).put("ip6", true)) }
         }
         val seen = HashSet<String>()
-        return out.filter { seen.add(it.toString()) }
+        val body = orderFor(out.filter { seen.add(it.toString()) })
+        return if (saved != null) listOf(saved) + body.filter { it.toString() != saved.toString() } else body
     }
 
     /** plain facts about this phone's network, written once into the report */

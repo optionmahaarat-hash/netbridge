@@ -3,6 +3,7 @@ import io
 import json
 import socket
 import threading
+from pathlib import Path
 import zipfile
 
 import pytest
@@ -152,11 +153,11 @@ def test_manager_start_missing_exe_and_h3_to_h2_fallback(tmp_path, monkeypatch):
 
     monkeypatch.setattr(m, "_launch", lambda port, mode, **kw: (launched.append((mode, kw)[0]), setattr(m, "process", P())))
     monkeypatch.setattr(aether, "free_port", lambda *a, **k: 1900)
-    ready = lambda port: launched[-1] == "h2"                      # only the HTTP/2 mode comes up
+    ready = lambda port: launched[-1] == "h2"                      # HTTP/2 is tried first and comes up
     t = [0.0]
     monkeypatch.setattr(aether.time, "time", lambda: t[0])
     port = m.start(wait=2, ready=ready, sleep=lambda s: t.__setitem__(0, t[0] + 1))
-    assert port == 1900 and launched == ["h3", "h2"] and m.port == 1900
+    assert port == 1900 and launched == ["h2"] and m.port == 1900
 
 
 def test_manager_error_carries_log_tail(tmp_path, monkeypatch):
@@ -328,3 +329,219 @@ def test_psiphon_tool_ends_up_next_to_the_exe(tmp_path):
     with zf.ZipFile(b, "w") as z:
         z.writestr("aether.exe", b"MZ"); z.writestr("pt/psiphon-tunnel-core.exe", b"PSI"); z.writestr("pt/obfs4proxy.exe", b"O")
     assert aether.extract_pt(b.getvalue(), tmp_path) == 2 and (tmp_path / "pt" / "psiphon-tunnel-core.exe").read_bytes() == b"PSI"
+
+
+# ---------------------------------------------------------------- WhiteAesther-inspired additions
+def test_wom_enroll_address_and_default_h2_first():
+    a = aether.build_args("aether.exe", protocol="wom", mode="h2")
+    assert "--wg-over-masque" in a and "--h2" in a and "--wom" not in a
+    b = aether.build_args("aether.exe", enroll_address="188.114.97.6")
+    assert b[b.index("--enroll-address") + 1] == "188.114.97.6"
+    with pytest.raises(ValueError):
+        aether.build_args("aether.exe", enroll_address="a b;rm")
+    import inspect
+    assert inspect.signature(aether.AetherManager.start).parameters["modes"].default == ("h2", "h3")
+
+
+def test_supported_flags_reads_help_text_and_survives_errors():
+    class R:  # noqa
+        stdout = "Usage: aether [OPTIONS]\n  --ech <v>   x\n  --enroll-address <a>\n  -4\n"; stderr = ""
+    assert aether.supported_flags("x", run=lambda *a, **k: R()) == {"--ech", "--enroll-address"}
+    def boom(*a, **k): raise OSError("no")
+    assert aether.supported_flags("x", run=boom) == set()
+
+
+def test_identity_backup_restore_roundtrip_and_refusals(tmp_path):
+    d = tmp_path / "d"; d.mkdir()
+    assert not aether.identity_exists(d)
+    with pytest.raises(aether.AetherError):
+        aether.backup_identity(tmp_path / "b.zip", d)
+    (d / "aether-masque.toml").write_text('private_key = "abc"\nid = "1234567890123456"\n', encoding="utf-8")   # the name a real run uses
+    (d / "aether-wg.toml").write_text('private_key = "wg"\nid = "1234567890123456"\n', encoding="utf-8")
+    (d / "aether-masque.toml.bak").write_text("old", encoding="utf-8")                                          # backups are not identities
+    (d / "other.toml").write_text("x=1" * 20, encoding="utf-8")
+    assert [p.name for p in aether.identity_files(d)] == ["aether-masque.toml", "aether-wg.toml"]
+    aether.backup_identity(tmp_path / "b.zip", d)
+    (d / "aether-masque.toml").write_text('private_key = "NEW"\nid = "99999999999999999"\n', encoding="utf-8")
+    assert sorted(aether.restore_identity(tmp_path / "b.zip", d)) == ["aether-masque.toml", "aether-wg.toml"]
+    assert 'abc' in (d / "aether-masque.toml").read_text() and (d / "aether-masque.toml.bak").read_text().startswith("private_key = \"NEW\"")
+    (tmp_path / "big.toml").write_bytes(b"a=" + b"x" * 70000)
+    with pytest.raises(aether.AetherError):
+        aether.restore_identity(tmp_path / "big.toml", d)
+    (tmp_path / "bin.toml").write_bytes(b"\x00\x01\x02=")
+    with pytest.raises(aether.AetherError):
+        aether.restore_identity(tmp_path / "bin.toml", d)
+    import zipfile
+    with zipfile.ZipFile(tmp_path / "evil.zip", "w") as z:
+        z.writestr("../evil.toml", "a=1"); z.writestr("notes.txt", "a=1")
+    with pytest.raises(aether.AetherError):                    # path tricks and foreign names are never written
+        aether.restore_identity(tmp_path / "evil.zip", d)
+
+
+def test_upstream_without_identity_warns_and_wom_needs_the_flag(tmp_path, monkeypatch):
+    (tmp_path / "a.exe").write_bytes(b"x")
+    m = aether.AetherManager(executable=tmp_path / "a.exe", data_dir=tmp_path / "d")
+    monkeypatch.setattr(aether, "supported_flags", lambda exe, run=None: set())
+    with pytest.raises(aether.AetherError, match="wg-over-masque"):
+        m.start(protocol="wom")
+    m.upstream = "socks5://127.0.0.1:1900"
+    seen = []
+    monkeypatch.setattr(m, "_launch", lambda *a, **k: (_ for _ in ()).throw(aether.AetherError("stop here")))
+    with pytest.raises(aether.AetherError, match="stop here"):
+        m.start(progress=seen.append)
+    assert any("no saved identity" in s for s in seen)
+
+
+def test_legacy_nested_identity_is_found_and_moved(tmp_path):
+    from app.core import aether
+    nested = tmp_path / "data" / "aether"
+    nested.mkdir(parents=True)
+    (nested / "aether-masque.toml").write_text('private_key = "x"\nid = "y"\n' * 3)
+    assert aether.identity_exists(tmp_path)
+    assert aether.migrate_legacy_identity(tmp_path) == ["aether-masque.toml"]
+    assert (tmp_path / "aether-masque.toml").exists()
+    assert aether.migrate_legacy_identity(tmp_path) == []          # never overwrites
+
+
+def test_launch_uses_absolute_config_path(tmp_path, monkeypatch):
+    from app.core import aether
+    seen = {}
+    monkeypatch.setattr(aether.subprocess, "Popen", lambda args, **kw: seen.update(args=args, cwd=kw.get("cwd")) or type("P", (), {"stdout": iter(()), "poll": lambda s: None})())
+    monkeypatch.setattr(aether.threading, "Thread", lambda **kw: type("T", (), {"start": lambda s: None})())
+    m = aether.AetherManager(executable=tmp_path / "aether.exe", data_dir=tmp_path / "d")
+    monkeypatch.setattr(aether, "supported_flags", lambda exe, run=None: set())
+    m._launch(1819, "h2")
+    cfg = seen["args"][seen["args"].index("--config") + 1]
+    assert Path(cfg).is_absolute()
+
+
+def test_kill_strays_only_inside_our_folder_and_only_on_windows(tmp_path, monkeypatch):
+    from app.core import aether
+    m = aether.AetherManager(executable=tmp_path / "cores" / "aether.exe", data_dir=tmp_path / "d")
+    calls = []
+    assert m.kill_strays(run=lambda *a, **k: calls.append(a), windows=False) is False and not calls
+    assert m.kill_strays(run=lambda *a, **k: calls.append(a), windows=True) is True
+    cmd = calls[0][0][-1]
+    assert str(tmp_path / "cores") in cmd and "ExecutablePath" in cmd
+
+
+# ---------------------------------------------------------------- scan mode, WireGuard noize names, New WARP key
+def _val(args, flag):
+    return args[args.index(flag) + 1]
+
+
+def test_build_args_scan_mode_and_wireguard_noize():
+    d = aether.build_args("a.exe", 1900)
+    assert "--turbo" in d and _val(d, "--noize") == "firewall"                      # unchanged default for MASQUE
+    assert "--ironclad" in aether.build_args("a.exe", 1900, scan="ironclad") and "--turbo" not in aether.build_args("a.exe", 1900, scan="ironclad")
+    w = aether.build_args("a.exe", 1900, protocol="wg")
+    assert _val(w, "--noize") == "balanced"                                         # 'firewall' is a MASQUE profile, not a WireGuard one
+    assert _val(aether.build_args("a.exe", 1900, protocol="wg", noize="gfw"), "--noize") == "aggressive"
+    assert _val(aether.build_args("a.exe", 1900, protocol="gool"), "--noize") == "firewall"
+    assert _val(aether.build_args("a.exe", 1900, protocol="wom", noize="gfw"), "--noize") == "gfw"
+    with pytest.raises(ValueError):
+        aether.build_args("a.exe", 1, scan="fast")
+
+
+def test_build_args_fragment_only_for_registration_on_h3():
+    assert "--fragment" not in aether.build_args("a.exe", 1900, "h3")
+    assert "--fragment" in aether.build_args("a.exe", 1900, "h3", fragment_api=True)
+    assert aether.build_args("a.exe", 1900, "h2", fragment_api=True).count("--fragment") == 1      # not doubled
+
+
+def test_new_key_moves_identity_and_keeps_gateway_cache(tmp_path):
+    m = aether.AetherManager(data_dir=tmp_path)
+    assert m.new_key() == 0
+    body = "private_key = 'xxxxxxxxxxxxxxxxxxxxxxxx'\n"
+    (tmp_path / "aether-masque.toml").write_text(body); (tmp_path / "aether-wg.toml").write_text(body)
+    (tmp_path / "aether-masque-lastconn.toml").write_text(body); (tmp_path / "other.toml").write_text(body)
+    (tmp_path / "aether-wg.toml.bak").write_text("old")                              # an older backup is replaced
+    assert m.new_key() == 2
+    assert not aether.identity_exists(tmp_path / "x") and [p.name for p in aether.identity_files(tmp_path)] == ["aether-masque-lastconn.toml"]
+    assert (tmp_path / "aether-wg.toml.bak").read_text() == body and (tmp_path / "aether-masque.toml.bak").exists()
+    assert (tmp_path / "other.toml").exists()
+
+
+# ---------------------------------------------------------------- endpoint in the log, pinned gateway, Scan endpoint
+def test_parse_endpoint_lines():
+    f = aether.parse_endpoint
+    assert f("[2026-09-11T10:00:00.000Z INFO  aether::prober] selected MASQUE gateway 162.159.198.2:443") == ("162.159.198.2:443", None)
+    assert f("\x1b[32mINFO\x1b[0m selected WireGuard endpoint 188.114.97.3:2408") == ("188.114.97.3:2408", None)
+    assert f("selected MASQUE gateway [2606:4700:103::1]:443") == ("[2606:4700:103::1]:443", None)
+    assert f("selected MASQUE gateway 2606:4700:103::1:443") == ("[2606:4700:103::1]:443", None)          # bare IPv6 gets brackets
+    assert f("gool ready: masque 162.159.198.2:443 carries wireguard 162.159.192.1:2408") == ("162.159.198.2:443", "162.159.192.1:2408")
+    assert f("using cloudflare edge 1.1.1.1:2408 (outer) and 2.2.2.2:2408 (inner)") == ("1.1.1.1:2408", "2.2.2.2:2408")
+    for none in ("", "scanning 162.159.198.2:443", "selected MASQUE gateway not-an-address", "selected MASQUE gateway 1.2.3.4"):
+        assert f(none) is None
+
+
+def test_build_args_peer_and_fresh_scan():
+    a = aether.build_args("a.exe", 1900, peer="162.159.198.2:443")
+    assert _val(a, "--peer") == "162.159.198.2:443" and "--quick-reconnect" in a
+    b = aether.build_args("a.exe", 1900, quick_reconnect=False)
+    assert "--no-quick-reconnect" in b and "--quick-reconnect" not in b and "--peer" not in b
+    assert "[2606:4700::1]:443" in aether.build_args("a.exe", 1900, peer="[2606:4700::1]:443")
+    for bad in ("1.2.3.4", "host:443", "1.2.3.4:443; calc", "--evil"):
+        with pytest.raises(ValueError):
+            aether.build_args("a.exe", 1, peer=bad)
+
+
+def test_pins_roundtrip_and_bad_file(tmp_path):
+    m = aether.AetherManager(data_dir=tmp_path)
+    assert m.pins() == {} and m.pin_for("masque", "h3", "4") is None
+    m.set_pin("masque", "h3", "4", "1.2.3.4:443"); m.set_pin("wg", "h3", "4", "5.6.7.8:2408")
+    assert m.pin_for("masque", "h3", "4") == "1.2.3.4:443" and m.pin_for("masque", "h2", "4") is None
+    assert m.pin_for("wg", "h2", "4") == "5.6.7.8:2408"                    # mode only matters for MASQUE / WireGuard over MASQUE
+    with pytest.raises(ValueError):
+        m.set_pin("masque", "h3", "4", "nonsense")
+    (tmp_path / "pinned_endpoints.json").write_text('{"masque-h3-4": "1.2.3.4:443; calc", "x": 5}')
+    assert m.pins() == {}                                                  # unsafe values from a hand-edited file are dropped
+    (tmp_path / "pinned_endpoints.json").write_text("not json")
+    assert m.pins() == {}
+    m.set_pin("masque", "h3", "4", "1.2.3.4:443")
+    assert m.clear_pins() == 1 and m.pins() == {}
+
+
+class _FakeProc:
+    stdout = None
+    def poll(self): return None
+    def terminate(self): pass
+    def wait(self, timeout=None): pass
+
+
+def test_scan_endpoint_modes_in_order_and_saves_pin(tmp_path, monkeypatch):
+    (tmp_path / "a.exe").write_bytes(b"x")
+    m = aether.AetherManager(executable=tmp_path / "a.exe", data_dir=tmp_path / "d")
+    modes = []
+
+    def fake_launch(port, mode, **kw):
+        modes.append((mode, kw.get("fresh")))
+        m.endpoint = None
+        m.process = _FakeProc()
+        if mode == "h3":                                                    # HTTP/2 (tried first) never names a gateway; HTTP/3 does
+            m.endpoint = ("162.159.198.2:443", None)
+
+    monkeypatch.setattr(m, "_launch", fake_launch)
+    monkeypatch.setattr(aether, "free_port", lambda *a, **k: 1900)
+    t = [0.0]
+    monkeypatch.setattr(aether.time, "time", lambda: t[0])
+    ep, mode = m.scan_endpoint(wait=2, sleep=lambda s: t.__setitem__(0, t[0] + 1))
+    assert (ep, mode) == ("162.159.198.2:443", "h3") and modes == [("h2", True), ("h3", True)]
+    assert m.pin_for("masque", "h3", "4") == "162.159.198.2:443" and m.pin_for("masque", "h2", "4") is None
+    assert m.process is None
+
+
+def test_scan_endpoint_nothing_found_cancel_and_missing_exe(tmp_path, monkeypatch):
+    (tmp_path / "a.exe").write_bytes(b"x")
+    m = aether.AetherManager(executable=tmp_path / "a.exe", data_dir=tmp_path / "d")
+    monkeypatch.setattr(m, "_launch", lambda port, mode, **kw: (setattr(m, "endpoint", None), setattr(m, "process", _FakeProc())))
+    monkeypatch.setattr(aether, "free_port", lambda *a, **k: 1900)
+    t = [0.0]
+    monkeypatch.setattr(aether.time, "time", lambda: t[0])
+    with pytest.raises(aether.AetherError, match="did not name an endpoint"):
+        m.scan_endpoint(wait=2, sleep=lambda s: t.__setitem__(0, t[0] + 1))
+    assert m.pins() == {}
+    with pytest.raises(aether.AetherError, match="cancelled"):
+        m.scan_endpoint(wait=2, cancelled=lambda: True)
+    with pytest.raises(aether.AetherError, match="not installed"):
+        aether.AetherManager(executable=tmp_path / "none.exe", data_dir=tmp_path / "d").scan_endpoint()

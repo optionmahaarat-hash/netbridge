@@ -79,3 +79,4 @@ def test_singbox_json_import():
     assert p[1]["security"] == ""
     ws = generate_xray_config(p[0])["outbounds"][0]["streamSettings"]["wsSettings"]
     assert ws["maxEarlyData"] == 2560
+

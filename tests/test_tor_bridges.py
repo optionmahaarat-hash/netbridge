@@ -49,3 +49,17 @@ def test_stop_during_start_is_cancel_not_crash(tmp_path, monkeypatch):
         return False
     with pytest.raises(aether.AetherError, match="cancelled"):
         m.start(ready=ready, sleep=lambda s: None, kind="tor-only")
+
+
+def test_psiphon_mode_and_noize_flags():
+    a = aether.build_args("aether.exe", psiphon="psiphon-only", psiphon_mode="cdn")
+    assert a[a.index("--psiphon-mode") + 1] == "cdn"
+    b = aether.build_args("aether.exe", noize="gfw")
+    assert b[b.index("--noize") + 1] == "gfw"
+    assert "--psiphon-mode" not in aether.build_args("aether.exe", psiphon="psiphon-only")
+    assert aether.build_args("aether.exe")[aether.build_args("aether.exe").index("--noize") + 1] == "firewall"
+    for bad in ({"psiphon_mode": "x"}, {"noize": "x"}):
+        try:
+            aether.build_args("aether.exe", **bad); raise AssertionError("accepted")
+        except ValueError:
+            pass

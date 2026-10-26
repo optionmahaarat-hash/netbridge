@@ -17,7 +17,8 @@ data class Ui(
     val phase: Phase = Phase.IDLE, val done: Int = 0, val total: Int = 0,
     val profiles: List<P> = emptyList(), val rev: Int = 0, val selected: String = "auto",
     val exit: String = "", val msg: String = "", val warn: String = "",
-    val iran: Boolean = true, val lang: String = "fa", val clipNew: Int = 0, val freeAuto: Boolean = false
+    val iran: Boolean = true, val lang: String = "fa", val clipNew: Int = 0, val freeAuto: Boolean = false,
+    val firewall: String = "auto"
 )
 
 class Vm(app: Application) : AndroidViewModel(app) {
@@ -26,7 +27,7 @@ class Vm(app: Application) : AndroidViewModel(app) {
     private var job: Job? = null
     private var clipText = ""
     private var clipSeen = ""
-    val ui = MutableStateFlow(Ui(profiles = profiles.toList(), selected = store.selected, iran = store.iranDirect, lang = store.lang, freeAuto = store.freeAuto))
+    val ui = MutableStateFlow(Ui(profiles = profiles.toList(), selected = store.selected, iran = store.iranDirect, lang = store.lang, freeAuto = store.freeAuto, firewall = store.firewall))
 
     init {
         Presets.load(app)
@@ -62,6 +63,7 @@ class Vm(app: Application) : AndroidViewModel(app) {
                 var warn = ""
                 if (sel != null) pool = listOf(sel)
                 else {
+                    Auto.firewall = store.firewall
                     val r = Auto.run(app, profiles.toList(), { d, t -> set { it.copy(done = d, total = t) } }, ::logLine)
                     withContext(Dispatchers.IO) { store.save(profiles) }
                     refresh()
@@ -146,18 +148,25 @@ class Vm(app: Application) : AndroidViewModel(app) {
         store.save(profiles); refresh(); return n
     }
 
-    /** Downloads the public list, replaces its previous servers and adds the fresh ones. onDone(ok, text): the count or the error. */
+    /** Downloads every public list, replaces each list's previous servers and adds the fresh ones.
+     *  A list that fails is skipped (the others still count). onDone(ok, text): the number of new servers, or the error. */
     fun getFreeConfigs(onDone: (Boolean, String) -> Unit) {
         viewModelScope.launch {
             try {
                 val proxy = if (ui.value.phase == Phase.CONNECTED) VpnSvc.httpPort else null
-                val (found, _) = withContext(Dispatchers.IO) { Sources.fetchFirst(Sources.MIRRORS) { Net.fetchSubscription(it, proxy).first } }
-                val fresh = found.onEach { it.put("group", Sources.GROUP) }
-                val keep = Sources.dropGroup(profiles.toList(), Sources.GROUP)
-                profiles.clear(); profiles.addAll(keep)
-                val n = merge(fresh)
+                var total = 0; var okLists = 0; var lastErr = "no list answered"
+                for (src in Sources.ALL) {
+                    try {
+                        val (found, _) = withContext(Dispatchers.IO) { Sources.fetchFirst(src.mirrors, src.limit) { Net.fetchSubscription(it, proxy).first } }
+                        found.forEach { it.put("group", src.group) }
+                        val keep = Sources.dropGroup(profiles.toList(), src.group)
+                        profiles.clear(); profiles.addAll(keep)
+                        total += merge(found); okLists++
+                    } catch (e: Exception) { lastErr = "${src.id}: ${e.message}" }
+                }
+                if (okLists == 0) { onDone(false, lastErr); return@launch }
                 store.freeLast = System.currentTimeMillis()
-                onDone(true, n.toString())
+                onDone(true, total.toString())
             } catch (e: Exception) { onDone(false, e.message ?: "error") }
         }
     }
@@ -223,6 +232,7 @@ class Vm(app: Application) : AndroidViewModel(app) {
 
     // ---------- settings / clipboard ----------
     fun setFreeAuto(v: Boolean) { store.freeAuto = v; set { it.copy(freeAuto = v) } }
+    fun setFirewall(v: String) { store.firewall = v; Auto.firewall = v; set { it.copy(firewall = v) } }
     fun setIran(v: Boolean) { store.iranDirect = v; set { it.copy(iran = v) } }
     fun setLang(v: String) { store.lang = v; set { it.copy(lang = v) } }
     fun clearMsg() = set { it.copy(msg = "") }
